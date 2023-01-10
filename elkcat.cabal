@@ -1,0 +1,44 @@
+cabal-version: 1.12
+
+-- This file has been generated from package.yaml by hpack version 0.35.0.
+--
+-- see: https://github.com/sol/hpack
+
+name:           elkcat
+version:        0.1.0.0
+description:    Please see the README on GitHub at <https://github.com/dylex/elkcat#readme>
+homepage:       https://github.com/dylex/elkcat#readme
+bug-reports:    https://github.com/dylex/elkcat/issues
+author:         Dylan Simon
+maintainer:     dylan@dylex.net
+copyright:      2023 Dylan Simon
+license:        Apache-2.0
+build-type:     Simple
+extra-source-files: README.md
+data-files:     elkcat.yaml
+
+source-repository head
+  type: git
+  location: https://github.com/dylex/elkcat
+
+executable elkcat
+  main-is: elkcat.hs
+  other-modules:
+    Paths_elkcat
+  hs-source-dirs:
+      .
+  ghc-options: -Wall
+  build-depends:
+      base >=4.7 && <5
+    , aeson
+    , bytestring
+    , case-insensitive
+    , directory
+    , http-client
+    , http-conduit
+    , http-types
+    , network-uri
+    , text
+    , vector
+    , yaml
+  default-language: Haskell2010

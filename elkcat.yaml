@@ -1,0 +1,21 @@
+# Example/default elkcat config file
+# Place in $XDG_CONFIG_HOME/elkcat.yaml or $ELKCAT
+elasticsearch:
+  # url for elasticsearch endpoint
+  url: http://127.0.0.1:9200/
+
+  # optional authentication methods
+  #basic-auth:
+    #username: 
+    #password: 
+  #proxy-auth:
+    #username: 
+    #password: 
+  #bearer-auth: token
+
+  # additional headers to pass with each ES request
+  headers:
+    #accept-encoding: ' ' # disable gzip, etc
+index: log-*
+timestamp: '@timestamp'
+format: '{timestamp:strict_date_optional_time} {message}'
