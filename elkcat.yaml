@@ -16,6 +16,84 @@ elasticsearch:
   # additional headers to pass with each ES request
   headers:
     #accept-encoding: ' ' # disable gzip, etc
+# index or index pattern to query
 index: log-*
+# timestamp field used for filtering and sorting
 timestamp: '@timestamp'
+# number of results in each request
+size: 10000
+# message format containing {FIELD} placeholders with optional {FIELD:FORMAT} or {FIELD:[+-]WIDTH} (left or right padding)
 format: '{timestamp:strict_date_optional_time} {message}'
+macros:
+  term:
+    switch:
+    - match: '/(.*)/'
+      filter:
+        regexp:
+          '{}':
+            value: '{1}'
+    - match: '/(.*)/i'
+      filter:
+        regexp:
+          '{}':
+            value: '{1}'
+            case_insensitive: true
+    - match: '.*{delim|,}.*'
+      filter:
+        terms:
+          '{}': '{0}'
+      split: '{delim|,}'
+    - filter:
+        term:
+          '{}': '{0}'
+args:
+- flags: [t,test]
+  term:
+    field: hostname
+  filter:
+    term:
+      hostname:
+        value: {}
+- flags: [h,host]
+  switch:
+  - match: '/(.*)/'
+    filter:
+      regexp:
+        hostname:
+          value: '{1}'
+  - match: '/(.*)/i'
+    filter:
+      regexp:
+        hostname:
+          value: '{1}'
+          case_insensitive: true
+  - match: '.*,.*'
+    filter:
+      terms:
+        hostname: '{}'
+    split: ','
+  - filter:
+      term:
+        hostname: '{}'
+- switch:
+  - match: '/(.*)/'
+    filter:
+      regexp:
+        message:
+          value: '{1}'
+  - match: '/(.*)/'
+    filter:
+      regexp:
+        hostname:
+          value: '{1}'
+  - filter:
+      match:
+        message:
+          query: '{}'
+# -h host => term
+# -h host1 -h host2 => terms
+# -h host1,host2 => terms
+# -h host* => wildcard
+# -m foo.bar => regex
+# foo bar => match (multi/combined?)
+# case insensitive?

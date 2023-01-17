@@ -15,7 +15,7 @@ copyright:      2023 Dylan Simon
 license:        Apache-2.0
 build-type:     Simple
 extra-source-files: README.md
-data-files:     elkcat.yaml
+data-files:     elkcat.yaml datemsk
 
 source-repository head
   type: git
@@ -25,12 +25,17 @@ executable elkcat
   main-is: elkcat.hs
   other-modules:
     Paths_elkcat
+    Args
+    Config
+    Placeholder
+    Time
   hs-source-dirs:
       .
   ghc-options: -Wall
   build-depends:
       base >=4.7 && <5
     , aeson
+    , array
     , bytestring
     , case-insensitive
     , directory
@@ -38,7 +43,10 @@ executable elkcat
     , http-conduit
     , http-types
     , network-uri
+    , regex-base
+    , regex-posix
     , text
+    , time
     , vector
     , yaml
   default-language: Haskell2010
