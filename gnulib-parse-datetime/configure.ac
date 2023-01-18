@@ -1,5 +1,5 @@
 # Process this file with autoconf to produce a configure script.
-AC_INIT([gnulib-parse-datetime2], [0])
+AC_INIT([gnulib-parse-datetime], [0])
 AC_CONFIG_AUX_DIR([build-aux])
 AM_INIT_AUTOMAKE
 
@@ -86,7 +86,6 @@ gl_m4_base='glm4'
   gl_MULTIARCH
   gl_FUNC_GNU_STRFTIME
   gl_PARSE_DATETIME
-  AC_DEFINE([GNULIB_PARSE_DATETIME2], [1], [Define to support parse_datetime2.])
   gl_FUNC_SETENV
   gl_CONDITIONAL([GL_COND_OBJ_SETENV],
                  [test $HAVE_SETENV = 0 || test $REPLACE_SETENV = 1])

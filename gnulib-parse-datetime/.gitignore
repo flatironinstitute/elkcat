@@ -19,3 +19,6 @@
 /gllib/libgnu.a
 /glm4/Makefile
 /stamp-h1
+/configure
+/Makefile.in
+/aclocal.m4

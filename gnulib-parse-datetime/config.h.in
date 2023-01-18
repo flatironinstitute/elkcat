@@ -29,9 +29,6 @@
    declaration of the second argument to gettimeofday. */
 #undef GETTIMEOFDAY_TIMEZONE
 
-/* Define to support parse_datetime2. */
-#undef GNULIB_PARSE_DATETIME2
-
 /* Define to 1 when the gnulib module environ should be tested. */
 #undef GNULIB_TEST_ENVIRON
 
