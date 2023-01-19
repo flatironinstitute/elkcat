@@ -42,6 +42,7 @@ executable elkcat
     , http-client
     , http-conduit
     , http-types
+    , mtl
     , network-uri
     , regex-base
     , regex-posix
@@ -49,4 +50,7 @@ executable elkcat
     , time
     , vector
     , yaml
+  include-dirs: gnulib-parse-datetime
+  extra-lib-dirs: gnulib-parse-datetime/gllib
+  extra-libraries: gnu
   default-language: Haskell2010

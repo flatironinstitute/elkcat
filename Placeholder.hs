@@ -90,9 +90,11 @@ substitutePlaceholdersJSON sub j@(J.String s) = case parsePlaceholders s of
   [Literal _] -> j
   [Placeholder p] -> fromMaybe j $ sub p
   m -> J.String $ substitutePlaceholdersValues sub m
-substitutePlaceholdersJSON sub (J.Object j) = J.Object $ JM.mapKeyVal
-  (JK.fromText . substitutePlaceholdersValues sub . parsePlaceholders . JK.toText)
-  (substitutePlaceholdersJSON sub) j
+substitutePlaceholdersJSON sub j@(J.Object m)
+  | JM.null m = fromMaybe j $ sub T.empty -- treat empty object as "{}"
+  | otherwise = J.Object $ JM.mapKeyVal
+    (JK.fromText . substitutePlaceholdersValues sub . parsePlaceholders . JK.toText)
+    (substitutePlaceholdersJSON sub) m
 substitutePlaceholdersJSON sub (J.Array j) = J.Array $
   fmap (substitutePlaceholdersJSON sub) j
 substitutePlaceholdersJSON _ j = j
@@ -102,7 +104,9 @@ collectPlaceholdersText = collectPlaceholders . parsePlaceholders
 
 collectPlaceholdersJSON :: J.Value -> [T.Text]
 collectPlaceholdersJSON (J.String s) = collectPlaceholdersText s
-collectPlaceholdersJSON (J.Object j) = JM.foldMapWithKey
-  (\k v -> collectPlaceholdersText (JK.toText k) <> collectPlaceholdersJSON v) j
+collectPlaceholdersJSON (J.Object m)
+  | JM.null m = [T.empty]
+  | otherwise = JM.foldMapWithKey
+    (\k v -> collectPlaceholdersText (JK.toText k) <> collectPlaceholdersJSON v) m
 collectPlaceholdersJSON (J.Array j) = foldMap collectPlaceholdersJSON j
 collectPlaceholdersJSON _ = mempty

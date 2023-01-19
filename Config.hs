@@ -3,7 +3,6 @@
 
 module Config
   ( Config(..)
-  , Field(..)
   , FieldFormat(..)
   , Format
   ) where
@@ -23,14 +22,8 @@ import           Network.HTTP.Types.Header (hContentType)
 import Placeholder
 import Args
 
-newtype Field = Field{ fieldName :: T.Text }
-  deriving Show
-
-instance J.FromJSON Field where
-  parseJSON = J.withText "field name" $ return . Field
-
 data FieldFormat = FieldFormat
-  { formatField :: !Field
+  { formatField :: !T.Text
   , formatFieldFormat :: Maybe T.Text -- ES format, e.g., date format like "strict_date_optional_time"
   , formatFieldWidth :: Int -- space pad left (positive) or right (negative) to given width
   }
@@ -44,7 +37,7 @@ parseFieldFormat a
   | Right (w, "") <- TR.signed TR.decimal o' = f{ formatFieldWidth = w }
   | otherwise = f{ formatFieldFormat = Just o' }
   where
-  f = FieldFormat (Field n) Nothing 0
+  f = FieldFormat n Nothing 0
   (n,o) = T.breakOn ":" a
   o' = T.tail o
 
@@ -54,7 +47,6 @@ instance J.FromJSON FieldFormat where
 data Config = Config
   { confRequest :: HTTP.Request
   , confIndex :: String
-  , confTimestamp :: Field
   , confSize :: Word
   , confFormat :: Format
   , confOpts :: [Option]
@@ -92,7 +84,6 @@ instance J.FromJSON Config where
             , HTTP.responseTimeout = HTTP.responseTimeoutNone
             }
     confIndex <- c J..: "index"
-    confTimestamp <- c J..: "timestamp"
     confSize <- c J..:! "size" J..!= 1000
     confFormat <- c J..: "format"
     confOpts <- c J..: "opts"

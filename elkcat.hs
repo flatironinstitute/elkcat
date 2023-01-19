@@ -63,7 +63,7 @@ instance J.FromJSON Response where
 
 formatFields :: Format -> [JE.Encoding]
 formatFields = map pf . collectPlaceholders where
-  pf (FieldFormat (Field n) o _) = maybe
+  pf (FieldFormat n o _) = maybe
     (JE.text n)
     (JE.pairs . ("field" J..= n <>) . ("format" J..=)) o
 
@@ -74,7 +74,7 @@ justify w = case compare w 0 of
   LT -> T.justifyRight (negate w) ' '
 
 fieldFormat :: Doc -> FieldFormat -> T.Text
-fieldFormat d (FieldFormat (Field n) _ w) = justify w $ getf n where
+fieldFormat d (FieldFormat n _ w) = justify w $ getf n where
   getf "_id" = docId d
   getf f = foldMap fmt $ JM.lookup (JK.fromText f) (docFields d)
   fmt (J.String s) = s
@@ -87,7 +87,6 @@ formatMessage fmt doc = substitutePlaceholders (fieldFormat doc) fmt
 
 main :: IO ()
 main = do
-  initTime =<< getDataFileName "datemsk"
   conffile <- maybe (getXdgDirectory XdgConfig "elkcat.yaml") return =<< lookupEnv "ELKCAT"
   isconf <- doesFileExist conffile
   unless isconf $ do
@@ -100,11 +99,8 @@ main = do
   prog <- getProgName
   args' <- getArgs
 
-  mapM_ (print <=< getLocalTime) args'
-  exitFailure
-
   Query{..} <- case Opt.getOpt (Opt.ReturnInOrder confArgs) confOpts args' of
-    (o, [], []) -> return $ mconcat o
+    (o, [], []) -> runArg $ foldM' o
     (_, _, err) -> do
       mapM_ (hPutStrLn stderr) err
       hPutStrLn stderr $ Opt.usageInfo ("Usage: " ++ prog ++ " [OPTIONS]\n") confOpts
@@ -114,13 +110,14 @@ main = do
       req = JE.pairs 
         $  "track_total_hits" J..= False
         <> "size" J..= confSize
-        <> "sort" J..= ["@timestamp", "_doc" :: T.Text]
+        <> "sort" J..= querySort
         <> "_source" J..= False
         <> "fields" `JE.pair` JE.list id (formatFields confFormat)
         <> "query" `JE.pair` (JE.pairs
           $  "bool" `JE.pair` (JE.pairs
             $  "filter" J..= queryFilters))
   BSLC.putStrLn $ BSB.toLazyByteString $ J.fromEncoding req
+  -- exitFailure
 
   r <- HTTP.httpJSON $ searchRequest config req
   mapM_ (BSC.hPutStrLn stderr) $ HTTP.getResponseHeader "warning" r
