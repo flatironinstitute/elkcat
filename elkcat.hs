@@ -3,7 +3,7 @@
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
-import           Control.Monad (unless, (<=<))
+import           Control.Monad (when, unless)
 import qualified Data.Aeson.Encoding as JE
 import qualified Data.Aeson.Types as J
 import qualified Data.Aeson.Key as JK
@@ -31,7 +31,6 @@ import Paths_elkcat (getDataFileName)
 import Placeholder
 import Args
 import Config
-import Time
 
 searchRequest :: Config -> J.Encoding -> HTTP.Request
 searchRequest Config{..} body =
@@ -99,29 +98,39 @@ main = do
   prog <- getProgName
   args' <- getArgs
 
-  Query{..} <- case Opt.getOpt (Opt.ReturnInOrder confArgs) confOpts args' of
-    (o, [], []) -> runArg $ foldM' o
-    (_, _, err) -> do
-      mapM_ (hPutStrLn stderr) err
+  let (opts, _, errs) = Opt.getOpt (Opt.ReturnInOrder confArgs) confOpts args'
+  qore <- runArgs opts
+  Query{..} <- case (errs, qore) of
+    ([], Right q) -> return (q <> confDefault)
+    (err, qerr) -> do
+      mapM_ (hPutStrLn stderr) (either (++) (\_ -> id) qerr err)
       hPutStrLn stderr $ Opt.usageInfo ("Usage: " ++ prog ++ " [OPTIONS]\n") confOpts
       exitFailure
 
   let fmt = formatMessage confFormat
-      req = JE.pairs 
-        $  "track_total_hits" J..= False
-        <> "size" J..= confSize
+      req =
+           "track_total_hits" J..= False
         <> "sort" J..= querySort
         <> "_source" J..= False
         <> "fields" `JE.pair` JE.list id (formatFields confFormat)
         <> "query" `JE.pair` (JE.pairs
           $  "bool" `JE.pair` (JE.pairs
-            $  "filter" J..= queryFilters))
-  BSLC.putStrLn $ BSB.toLazyByteString $ J.fromEncoding req
+            $  "filter" J..= queryFilter))
+  when confDebug $ BSLC.putStrLn $ BSB.toLazyByteString $ J.fromEncoding $ JE.pairs req
   -- exitFailure
 
-  r <- HTTP.httpJSON $ searchRequest config req
-  mapM_ (BSC.hPutStrLn stderr) $ HTTP.getResponseHeader "warning" r
-  let Response{..} = HTTP.getResponseBody r
-  V.mapM_ (TIO.putStrLn . fmt) responseHits
+  let loop :: Maybe Word -> Maybe J.Array -> IO ()
+      loop (Just 0) _ = return ()
+      loop count sa = do
+        let size = maybe id min count confSize
+        r <- HTTP.httpJSON $ searchRequest config (JE.pairs $ req
+          <> "size" J..= size
+          <> foldMap ("search_after" J..=) sa)
+        mapM_ (BSC.hPutStrLn stderr) $ HTTP.getResponseHeader "warning" r
+        let Response{..} = HTTP.getResponseBody r
+            n = fromIntegral $ V.length responseHits
+        V.mapM_ (TIO.putStrLn . fmt) responseHits
+        unless (n < size) $
+          loop (subtract n <$> count) $ Just $ docSort $ V.last responseHits
 
-  return ()
+  loop queryCount Nothing

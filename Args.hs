@@ -1,4 +1,5 @@
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ViewPatterns #-}
@@ -7,28 +8,30 @@ module Args
   ( Query(..)
   , Option
   , Argument
-  , foldM'
-  , runArg
+  , runArgs
   ) where
 
-import           Control.Monad (msum, foldM)
+import           Control.Applicative ((<|>))
+import           Control.Monad (msum, guard)
 import           Control.Monad.Except (Except, throwError, runExcept)
 import           Control.Monad.State (StateT, gets, modify, evalStateT)
 import qualified Data.Aeson.Key as JK
 import qualified Data.Aeson.KeyMap as JM
 import qualified Data.Aeson.Types as J
 import qualified Data.Array as A
-import           Data.Maybe (fromMaybe, maybeToList)
+import           Data.Default (Default(..))
 import qualified Data.Text as T
 import qualified Data.Text.Read as TR
 import           Data.Time.Clock (UTCTime, getCurrentTime, nominalDiffTimeToSeconds)
 import           Data.Time.Clock.POSIX (utcTimeToPOSIXSeconds)
 import qualified Data.Vector as V
+import           Text.Read (readMaybe)
 import           Text.Regex.Posix.String (Regex, compExtended)
 import qualified Text.Regex.Base as RE
 import qualified System.Console.GetOpt as Opt
 
 import Placeholder
+import JSON
 import Time
 
 {-
@@ -38,10 +41,32 @@ import Time
    \| -o or
  -}
 
+newtype Terms = Terms{ termsList :: [J.Value] }
+  deriving (Semigroup, Monoid, J.ToJSON)
+
+jsonTerms :: J.Value -> Terms
+jsonTerms J.Null = Terms []
+jsonTerms (J.Array v) = Terms $ V.toList v
+jsonTerms j = Terms [j]
+
+instance J.FromJSON Terms where
+  parseJSON = return . jsonTerms
+
 data Query = Query
-  { querySort :: [J.Value]
-  , queryFilters :: [J.Value]
+  { queryCount :: Maybe Word
+  , querySort :: Terms
+  , queryFilter :: Terms
   }
+
+parseQuery :: ObjectParser Query
+parseQuery = do
+  queryCount <- parseFieldMaybe "count"
+  querySort <- parseFieldMaybe "sort" .!= Terms []
+  queryFilter <- parseFieldMaybe "filter" .!= Terms []
+  return Query{..}
+
+instance J.FromJSON Query where
+  parseJSON = withObjectParser "argument case" parseQuery
 
 -- |which field this sort term sorts on (invalid for invalid sort terms)
 querySortKey :: J.Value -> T.Text
@@ -50,33 +75,48 @@ querySortKey (J.Object m) = foldMap JK.toText $ JM.keys m
 querySortKey _ = T.empty
 
 instance Semigroup Query where
-  Query s1 f1 <> Query s2 f2 = Query
-    (s1 <> filter (\s -> querySortKey s `notElem` map querySortKey s1) s2)
+  Query n1 s1 f1 <> Query n2 s2 f2 = Query
+    (n1 <|> n2)
+    (s1 <> Terms (filter (\s -> querySortKey s `notElem` map querySortKey (termsList s1)) (termsList s2)))
     (f1 <> f2)
 
 instance Monoid Query where
-  mempty = Query [J.String "_doc"] []
+  mempty = Query Nothing mempty mempty
+
+instance Default Query where
+  def = mempty{ querySort = Terms [J.String "_doc"] }
 
 data Context = Context
   { contextTime :: UTCTime
   }
 
-type ArgM = StateT Context (Except String)
+type ArgM = StateT Context (Except [String])
 type ArgQuery = ArgM Query
 
 instance {-# OVERLAPPING #-} MonadFail ArgM where
-  fail = throwError
+  fail = throwError . return
 
-foldM' :: (Monad m, Foldable t, Monoid a) => t (m a) -> m a
-foldM' = foldM (\m f -> (m <>) <$> f) mempty
+foldArgs :: (Monad m, Monoid a) => [m a] -> m a
+foldArgs [] = return mempty
+foldArgs (f:r) = do
+  a <- f
+  fa r $! a
+  where
+  fa [] a = return $ a <> mempty
+  fa (x:l) a = do
+    b <- x
+    fa l $! a <> b
 
-evaluateArg :: ArgM a -> Context -> Either String a
+evaluateArg :: ArgM a -> Context -> Either [String] a
 evaluateArg arg = runExcept . evalStateT arg
 
-runArg :: ArgM a -> IO a
+runArg :: ArgM a -> IO (Either [String] a)
 runArg arg = do
   t <- getCurrentTime
-  either fail return $ evaluateArg arg (Context t)
+  return $ evaluateArg arg (Context t)
+
+runArgs :: [ArgM Query] -> IO (Either [String] Query)
+runArgs = runArg . foldArgs
 
 type Argument = String -> ArgQuery
 type Option = Opt.OptDescr ArgQuery
@@ -84,15 +124,17 @@ type Option = Opt.OptDescr ArgQuery
 data ArgType
   = TypeString
   | TypeDate
+  | TypeNumber
 
 instance J.FromJSON ArgType where
   parseJSON = J.withText "arg type" pt where
-    pt "string" = return TypeString
-    pt "text" = return TypeString
-    pt "date" = return TypeDate
-    pt "time" = return TypeDate
-    pt "datetime" = return TypeDate
+    pt "string"    = return TypeString
+    pt "text"      = return TypeString
+    pt "date"      = return TypeDate
+    pt "time"      = return TypeDate
+    pt "datetime"  = return TypeDate
     pt "timestamp" = return TypeDate
+    pt "number"    = return TypeNumber
     pt t = fail $ "unknown arg type: " ++ show t
 
 parseDateArg :: String -> ArgM UTCTime
@@ -108,53 +150,42 @@ jsonDate :: UTCTime -> J.Value
 jsonDate = J.toJSON . (1e3 *) . nominalDiffTimeToSeconds . utcTimeToPOSIXSeconds
 
 data ArgCase = ArgCase
-  { argMatch :: Maybe (String, Regex)
+  { argMatch :: Maybe (T.Text, Regex)
   , argSplit :: Maybe T.Text
-  , argType :: Maybe ArgType
-  , argFilter :: Maybe J.Value -- with placeholders
-  , argSort :: [J.Value]
+  , argType :: ArgType
+  , argFilter
+  , argSort
+  , argCount :: J.Value -- with placeholders
   }
 
 newtype ArgHandler = ArgHandler
   { argCases :: [ArgCase]
   }
 
-parseCase :: J.Object -> J.Parser ArgCase
-parseCase a = do
-  match <- a J..:? "match"
-  argMatch <- mapM (\m -> (,) m <$> RE.makeRegexOptsM compExtended RE.blankExecOpt m) match
-  argSplit <- a J..:? "split"
-  argType <- a J..:? "type"
-  argFilter <- a J..:? "filter"
-  argSort <- a J..:? "sort" J..!= []
+parseCase :: ObjectParser ArgCase
+parseCase = do
+  argMatch <- explicitParseFieldMaybe 
+    (J.withText "regex" $ \m -> (,) m <$> RE.makeRegexOptsM compExtended RE.blankExecOpt (T.unpack m))
+    "match"
+  argSplit  <- parseFieldMaybe "split"
+  argType   <- parseFieldMaybe "type"   .!= TypeString
+  argFilter <- parseFieldMaybe "filter" .!= J.Null
+  argSort   <- parseFieldMaybe "sort"   .!= J.Null
+  argCount  <- parseFieldMaybe "count"  .!= J.Null
   return ArgCase{..}
 
-caseKeys :: [JK.Key]
-caseKeys = ["match", "split", "type", "filter", "sort"]
-
 instance J.FromJSON ArgCase where
-  parseJSON = J.withObject "argument case" $ parseCase
+  parseJSON = withObjectParser "argument case" parseCase
 
-parseHandler :: J.Object -> J.Parser ArgHandler
-parseHandler a = do
-  argBase <- if any (`JM.member` a) caseKeys
-    then (++) . return <$> parseCase a
-    else return id
-  argCases <- argBase <$> a J..:! "switch" J..!= []
+parseHandler :: ObjectParser ArgHandler
+parseHandler = do
+  argCases <- parseField "switch" <|> return <$> parseCase
   return ArgHandler{..}
 
 instance J.FromJSON ArgHandler where
-  parseJSON = J.withObject "argument handler" $ parseHandler
+  parseJSON = withObjectParser "argument handler" parseHandler
 
-noArg :: ArgHandler -> Maybe ArgQuery
-noArg (ArgHandler [ArgCase Nothing Nothing Nothing f s])
-  | hasp f = Nothing
-  | otherwise = Just $ return $ Query s (maybeToList f)
-  where
-  hasp = any (any T.null . collectPlaceholdersJSON)
-noArg _ = Nothing
-
-matchMaybe :: Maybe (String, Regex) -> String -> Maybe (A.Array Int String)
+matchMaybe :: Maybe (T.Text, Regex) -> String -> Maybe (A.Array Int String)
 matchMaybe Nothing s = Just (A.listArray (0,0) [s])
 matchMaybe (Just (_, r)) s
   | Just ("", groups, "") <- RE.matchOnceText r s = Just (fmap fst groups)
@@ -166,20 +197,28 @@ evaluateCases cases s = msum $ map (`evaluateCase` s) cases
 evaluateCase :: ArgCase -> Argument
 evaluateCase ArgCase{..} a
   | Just groups <- matchMaybe argMatch a =
-    query groups <$> maybe (format at)
+    query groups =<< maybe (format at)
       (\d -> J.toJSON <$> mapM format (T.splitOn d at))
       argSplit
   | otherwise = fail $ "argument " ++ show a ++ " does not match " ++ foldMap (show . fst) argMatch
   where
-  format s = case fromMaybe TypeString argType of
+  format s = case argType of
     TypeString -> return $ J.String s
-    TypeDate -> jsonDate <$> parseDateArg (T.unpack s)
-  query groups s0 = Query argSort $ maybe [] (return . substitutePlaceholdersJSON (subst groups s0)) argFilter
-  subst _ s0 "" = Just s0
-  subst groups _ (TR.decimal -> Right (i, ""))
-    | i == 0 = Just aj
-    | A.inRange (A.bounds groups) i = Just $ J.String $ T.pack $ groups A.! i
-  subst _ _ _ = Nothing
+    TypeDate   -> jsonDate <$> parseDateArg (T.unpack s)
+    TypeNumber -> J.Number <$> maybe (fail $ "invalid numeric value: " ++ show s) return (readMaybe (T.unpack s))
+  query groups s0 = do
+    queryCount <- either fail return $ J.parseEither J.parseJSON $ subph argCount
+    let querySort = terms argSort
+        queryFilter = terms argFilter
+    return Query{..}
+    where
+    terms = jsonTerms . subph
+    subph = substitutePlaceholdersJSON subst
+    subst "" = Just s0
+    subst (TR.decimal -> Right (i, ""))
+      | i == 0 = Just aj
+      | A.inRange (A.bounds groups) i = Just $ J.String $ T.pack $ groups A.! i
+    subst _ = Nothing
   at = T.pack a
   aj = J.String at
 
@@ -191,19 +230,29 @@ instance J.FromJSON Argument where
     evaluateHandler <$> J.parseJSON j
 
 instance J.FromJSON Option where
-  parseJSON = J.withObject "option" $ \a -> do
-    flags <- a J..:? "flags" J..!= V.empty
+  parseJSON = withObjectParser "option" $ do
+    flags <- parseFieldMaybe "flags" .!= V.empty
     let (short, long) = V.partitionWith shortlong flags
-    h <- parseHandler a
-    arg <- a J..:? "arg" J..!= "STRING"
-    help <- a J..:? "help" J..!= ""
+    o <- parseArg <|> parseNoArg -- <|> parseArg
+    help <- parseFieldMaybe "help" .!= ""
     return $ Opt.Option
       (V.toList short)
       (V.toList long)
-      (maybe
-        (Opt.ReqArg (evaluateHandler h) arg)
-        Opt.NoArg $ noArg h)
+      o
       help
     where
     shortlong [c] = Left c
     shortlong s = Right s
+    parseNoArg = do
+      q@Query{..} <- parseQuery
+      nop queryFilter
+      nop querySort
+      return $ Opt.NoArg $ return q
+      where
+      nop = guard . not . any (any T.null . collectPlaceholdersJSON) . termsList
+    parseArg :: ObjectParser (Opt.ArgDescr ArgQuery)
+    parseArg = do
+      h <- parseHandler
+      arg <- parseFieldMaybe "arg" .!= "ARG"
+      return $ Opt.ReqArg (evaluateHandler h) arg
+

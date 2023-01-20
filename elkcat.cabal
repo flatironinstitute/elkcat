@@ -27,6 +27,7 @@ executable elkcat
     Paths_elkcat
     Args
     Config
+    JSON
     Placeholder
     Time
   hs-source-dirs:
@@ -38,6 +39,7 @@ executable elkcat
     , array
     , bytestring
     , case-insensitive
+    , data-default
     , directory
     , http-client
     , http-conduit

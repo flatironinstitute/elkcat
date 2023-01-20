@@ -8,10 +8,10 @@ module Config
   ) where
 
 import           Control.Arrow ((***))
-import qualified Data.Aeson.KeyMap as JM
 import qualified Data.Aeson.Types as J
 import qualified Data.ByteString as BS
 import qualified Data.CaseInsensitive as CI
+import           Data.Default (def)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import qualified Data.Text.Read as TR
@@ -20,6 +20,7 @@ import qualified Network.HTTP.Simple as HTTP
 import           Network.HTTP.Types.Header (hContentType)
 
 import Placeholder
+import JSON
 import Args
 
 data FieldFormat = FieldFormat
@@ -49,8 +50,10 @@ data Config = Config
   , confIndex :: String
   , confSize :: Word
   , confFormat :: Format
+  , confDefault :: Query
   , confOpts :: [Option]
   , confArgs :: Argument
+  , confDebug :: Bool
   }
 
 data AuthData = AuthData
@@ -58,35 +61,37 @@ data AuthData = AuthData
   }
 
 instance J.FromJSON AuthData where
-  parseJSON = J.withObject "auth data" $ \a ->
-    AuthData <$> a J..: "username" <*> a J..: "password"
+  parseJSON = withObjectParser "auth data" $
+    AuthData <$> parseField "username" <*> parseField "password"
 
 applyAuth :: (BS.ByteString -> BS.ByteString -> a) -> AuthData -> a
 applyAuth f a = f (TE.encodeUtf8 $ authUsername a) (TE.encodeUtf8 $ authPassword a)
 
 instance J.FromJSON Config where
-  parseJSON = J.withObject "elkcat config" $ \c -> do
-    es <- c J..:? "elasticsearch" J..!= JM.empty
-    url <- es J..: "url"
-    req <- either (J.parserThrowError [J.Key "url"] . show) return $ HTTP.parseRequestThrow url
-    basic <- es J..:? "basic-auth"
-    proxy <- es J..:? "proxy-auth"
-    bearer <- es J..:? "bearer-auth"
-    headers <- es J..:? "headers" J..!= []
-    let confRequest =
-            maybe id (HTTP.applyBearerAuth . TE.encodeUtf8) bearer
-          $ maybe id (applyAuth HTTP.applyBasicProxyAuth) proxy
-          $ maybe id (applyAuth HTTP.applyBasicAuth) basic
-          $ req
-            { HTTP.requestHeaders =
-                [ (hContentType, "application/json") 
-                ] ++ map (CI.mk . TE.encodeUtf8 *** TE.encodeUtf8) headers
-            , HTTP.responseTimeout = HTTP.responseTimeoutNone
-            }
-    confIndex <- c J..: "index"
-    confSize <- c J..:! "size" J..!= 1000
-    confFormat <- c J..: "format"
-    confOpts <- c J..: "opts"
-    confArgs <- c J..: "args"
+  parseJSON = withObjectParser "elkcat config" $ do
+    confRequest <- parseSubObject "elasticsearch" $ do
+      req <- explicitParseField (J.withText "url" $ 
+        either (fail . show) return . HTTP.parseRequestThrow . T.unpack) "url"
+      basic <- parseFieldMaybe "basic-auth"
+      proxy <- parseFieldMaybe "proxy-auth"
+      bearer <- parseFieldMaybe "bearer-auth"
+      headers <- parseFieldMaybe "headers" .!= []
+      return $
+          maybe id (HTTP.applyBearerAuth . TE.encodeUtf8) bearer
+        $ maybe id (applyAuth HTTP.applyBasicProxyAuth) proxy
+        $ maybe id (applyAuth HTTP.applyBasicAuth) basic
+        $ req
+          { HTTP.requestHeaders =
+              [ (hContentType, "application/json") 
+              ] ++ map (CI.mk . TE.encodeUtf8 *** TE.encodeUtf8) headers
+          , HTTP.responseTimeout = HTTP.responseTimeoutNone
+          }
+    confIndex <- parseField "index"
+    confSize <- parseFieldMaybe' "size" .!= 1000
+    confFormat <- parseField "format"
+    confOpts <- parseField "opts"
+    confDefault <- (<> def) <$> parseFieldMaybe "default" .!= mempty
+    confArgs <- parseField "args"
+    confDebug <- parseFieldMaybe "debug" .!= False
     return Config{..}
 
