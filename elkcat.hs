@@ -1,11 +1,11 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards #-}
-{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE ViewPatterns #-}
 
-import           Control.Monad (when, unless)
+import           Control.Monad (when, unless, mfilter)
+import qualified Data.Aeson as J
 import qualified Data.Aeson.Encoding as JE
-import qualified Data.Aeson.Types as J
 import qualified Data.Aeson.Key as JK
 import qualified Data.Aeson.KeyMap as JM
 import qualified Data.Aeson.Text as JT
@@ -16,6 +16,11 @@ import qualified Data.ByteString.Lazy.Char8 as BSLC
 import qualified Data.Text as T
 import qualified Data.Text.Lazy as TL
 import qualified Data.Text.IO as TIO
+import           Data.Time.Clock (secondsToNominalDiffTime)
+import           Data.Time.Clock.POSIX (posixSecondsToUTCTime)
+import           Data.Time.Format (formatTime, defaultTimeLocale)
+import           Data.Time.LocalTime (utcToLocalZonedTime)
+import qualified Data.Text.Read as TR
 import qualified Data.Vector as V
 import qualified Data.Yaml as Y
 import qualified Network.HTTP.Client.Conduit as HTTP
@@ -26,6 +31,7 @@ import           System.Directory (getXdgDirectory, XdgDirectory(XdgConfig), doe
 import           System.Environment (getProgName, getArgs, lookupEnv)
 import           System.Exit (exitFailure)
 import           System.IO (hPutStrLn, stderr)
+import qualified System.IO.Unsafe as Unsafe (unsafeDupablePerformIO)
 
 import Paths_elkcat (getDataFileName)
 import Placeholder
@@ -52,6 +58,17 @@ instance J.FromJSON Doc where
     <*> d J..: "fields"
     <*> d J..: "sort"
 
+instance J.ToJSON Doc where
+  toJSON Doc{..} = J.object
+    [ "_id" J..= docId
+    , "fields" J..= docFields
+    , "sort" J..= docSort
+    ]
+  toEncoding Doc{..} = J.pairs
+    $ "_id" J..= docId
+    <> "fields" J..= docFields
+    <> "sort" J..= docSort
+
 data Response = Response
   { responseHits :: V.Vector Doc
   }
@@ -62,24 +79,31 @@ instance J.FromJSON Response where
 
 formatFields :: Format -> [JE.Encoding]
 formatFields = map pf . collectPlaceholders where
-  pf (FieldFormat n o _) = maybe
+  pf (FieldFormat n f) = maybe
     (JE.text n)
-    (JE.pairs . ("field" J..= n <>) . ("format" J..=)) o
-
-justify :: Int -> T.Text -> T.Text
-justify w = case compare w 0 of
-  EQ -> id
-  GT -> T.justifyLeft w ' '
-  LT -> T.justifyRight (negate w) ' '
+    (JE.pairs . ("field" J..= n <>) . ("format" J..=))
+    $ case f of
+      FormatES s -> Just s
+      FormatDate _ -> Just "epoch_millis"
+      _ -> Nothing
 
 fieldFormat :: Doc -> FieldFormat -> T.Text
-fieldFormat d (FieldFormat n _ w) = justify w $ getf n where
+fieldFormat d (FieldFormat n fw) = justify fw $ getf n where
   getf "_id" = docId d
-  getf f = foldMap fmt $ JM.lookup (JK.fromText f) (docFields d)
-  fmt (J.String s) = s
-  fmt J.Null = T.empty
-  fmt (J.Array a) = T.intercalate ";" $ map fmt $ V.toList a
-  fmt j = TL.toStrict $ JT.encodeToLazyText j
+  getf f = foldMap (fmt fw) $ JM.lookup (JK.fromText f) (docFields d)
+  fmt (FormatDate fd) (J.Number e) = date fd (realToFrac e)
+  fmt (FormatDate fd) (J.String (TR.rational -> Right (e, _))) = date fd e
+  fmt _ (J.String s) = s
+  fmt _ J.Null = T.empty
+  fmt _ (J.Array a) = T.intercalate ";" $ map (fmt fw) $ V.toList a
+  fmt _ j = TL.toStrict $ JT.encodeToLazyText j
+  date fd e = T.pack $ formatTime defaultTimeLocale fd
+    $ Unsafe.unsafeDupablePerformIO . utcToLocalZonedTime
+    $ posixSecondsToUTCTime $ secondsToNominalDiffTime (e / 1e3)
+  justify (FormatWidth w)
+    | w < 0 = T.justifyRight (negate w) ' '
+    | otherwise = T.justifyLeft w ' '
+  justify _ = id
 
 formatMessage :: Format -> Doc -> T.Text
 formatMessage fmt doc = substitutePlaceholders (fieldFormat doc) fmt
@@ -108,8 +132,7 @@ main = do
       exitFailure
 
   let fmt = formatMessage confFormat
-      req =
-           "track_total_hits" J..= False
+      req = "track_total_hits" J..= False
         <> "sort" J..= querySort
         <> "_source" J..= False
         <> "fields" `JE.pair` JE.list id (formatFields confFormat)
@@ -117,7 +140,6 @@ main = do
           $  "bool" `JE.pair` (JE.pairs
             $  "filter" J..= queryFilter))
   when confDebug $ BSLC.putStrLn $ BSB.toLazyByteString $ J.fromEncoding $ JE.pairs req
-  -- exitFailure
 
   let loop :: Maybe Word -> Maybe J.Array -> IO ()
       loop (Just 0) _ = return ()
@@ -129,8 +151,9 @@ main = do
         mapM_ (BSC.hPutStrLn stderr) $ HTTP.getResponseHeader "warning" r
         let Response{..} = HTTP.getResponseBody r
             n = fromIntegral $ V.length responseHits
+        when confDebug $ V.mapM_ (BSLC.putStrLn . J.encode) responseHits
         V.mapM_ (TIO.putStrLn . fmt) responseHits
         unless (n < size) $
           loop (subtract n <$> count) $ Just $ docSort $ V.last responseHits
 
-  loop queryCount Nothing
+  loop (mfilter (/= 0) queryCount) Nothing

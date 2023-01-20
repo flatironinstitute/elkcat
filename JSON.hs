@@ -1,7 +1,7 @@
 module JSON where
 
 import           Control.Monad (unless)
-import           Control.Monad.State (StateT(..), runStateT)
+import           Control.Monad.State (StateT(..), evalStateT, get)
 import qualified Data.Aeson.Key as JK
 import qualified Data.Aeson.KeyMap as JM
 import qualified Data.Aeson.Types as J
@@ -10,12 +10,22 @@ import           Data.Maybe (fromMaybe)
 -- |A 'J.Parser' that keeps track of the object being parsed
 type ObjectParser = StateT J.Object J.Parser
 
+-- |Fail if there are any remaining fields.
+checkUnparsedFields :: String -> ObjectParser ()
+checkUnparsedFields n = do
+  o <- get
+  unless (JM.null o) $ fail $ "Unexpected fields in " ++ n ++ ": " ++ show (JM.keys o)
+
+-- |Apply 'J.withObject' to an 'ObjectParser', ignoring unsparsed fields.
+withObjectParser_ :: String -> ObjectParser a -> J.Value -> J.Parser a
+withObjectParser_ n = J.withObject n . evalStateT
+
 -- |Apply 'J.withObject' to an 'ObjectParser', failing if there are any remaining fields at the end.
 withObjectParser :: String -> ObjectParser a -> J.Value -> J.Parser a
-withObjectParser n p = J.withObject n $ \o -> do
-  (a, o') <- runStateT p o
-  unless (JM.null o') $ fail $ "Unknown fields in " ++ n ++ ": " ++ show (JM.keys o')
-  return a
+withObjectParser n p = withObjectParser_ n $ do
+  r <- p
+  checkUnparsedFields n
+  return r
 
 -- |Apply a field parser (like 'J..:' or 'J..:?') to a field of the current object, and remove that field.
 parseFieldWith :: (J.Object -> J.Key -> J.Parser a) -> J.Key -> ObjectParser a

@@ -3,6 +3,7 @@
 
 module Config
   ( Config(..)
+  , Formatter(..)
   , FieldFormat(..)
   , Format
   ) where
@@ -23,22 +24,27 @@ import Placeholder
 import JSON
 import Args
 
+data Formatter
+  = FormatNone
+  | FormatES T.Text -- ^ES format, e.g., date format like "strict_date_optional_time"
+  | FormatDate String -- ^formatTime percent format (implies FormatES date)
+  | FormatWidth Int -- ^space pad left (positive) or right (negative) to given width
+
 data FieldFormat = FieldFormat
   { formatField :: !T.Text
-  , formatFieldFormat :: Maybe T.Text -- ES format, e.g., date format like "strict_date_optional_time"
-  , formatFieldWidth :: Int -- space pad left (positive) or right (negative) to given width
+  , fieldFormatter :: !Formatter
   }
-  deriving Show
 
 type Format = Placeholders FieldFormat
 
 parseFieldFormat :: T.Text -> FieldFormat
 parseFieldFormat a
-  | T.null o = f
-  | Right (w, "") <- TR.signed TR.decimal o' = f{ formatFieldWidth = w }
-  | otherwise = f{ formatFieldFormat = Just o' }
+  | T.null o = f FormatNone
+  | T.isPrefixOf "%" o' = f $ FormatDate (T.unpack o')
+  | Right (w, "") <- TR.signed TR.decimal o' = f $ FormatWidth w
+  | otherwise = f $ FormatES o'
   where
-  f = FieldFormat n Nothing 0
+  f = FieldFormat n
   (n,o) = T.breakOn ":" a
   o' = T.tail o
 

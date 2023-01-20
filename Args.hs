@@ -12,9 +12,9 @@ module Args
   ) where
 
 import           Control.Applicative ((<|>))
-import           Control.Monad (msum, guard)
+import           Control.Monad (msum, guard, foldM)
 import           Control.Monad.Except (Except, throwError, runExcept)
-import           Control.Monad.State (StateT, gets, modify, evalStateT)
+import           Control.Monad.State (StateT, get, gets, modify, evalStateT)
 import qualified Data.Aeson.Key as JK
 import qualified Data.Aeson.KeyMap as JM
 import qualified Data.Aeson.Types as J
@@ -22,7 +22,7 @@ import qualified Data.Array as A
 import           Data.Default (Default(..))
 import qualified Data.Text as T
 import qualified Data.Text.Read as TR
-import           Data.Time.Clock (UTCTime, getCurrentTime, nominalDiffTimeToSeconds)
+import           Data.Time.Clock (UTCTime, getCurrentTime)
 import           Data.Time.Clock.POSIX (utcTimeToPOSIXSeconds)
 import qualified Data.Vector as V
 import           Text.Read (readMaybe)
@@ -35,8 +35,7 @@ import JSON
 import Time
 
 {-
- global args:
-   -n NUM number of results
+ TODO:
    \( ... \) grouping
    \| -o or
  -}
@@ -57,16 +56,6 @@ data Query = Query
   , querySort :: Terms
   , queryFilter :: Terms
   }
-
-parseQuery :: ObjectParser Query
-parseQuery = do
-  queryCount <- parseFieldMaybe "count"
-  querySort <- parseFieldMaybe "sort" .!= Terms []
-  queryFilter <- parseFieldMaybe "filter" .!= Terms []
-  return Query{..}
-
-instance J.FromJSON Query where
-  parseJSON = withObjectParser "argument case" parseQuery
 
 -- |which field this sort term sorts on (invalid for invalid sort terms)
 querySortKey :: J.Value -> T.Text
@@ -97,15 +86,7 @@ instance {-# OVERLAPPING #-} MonadFail ArgM where
   fail = throwError . return
 
 foldArgs :: (Monad m, Monoid a) => [m a] -> m a
-foldArgs [] = return mempty
-foldArgs (f:r) = do
-  a <- f
-  fa r $! a
-  where
-  fa [] a = return $ a <> mempty
-  fa (x:l) a = do
-    b <- x
-    fa l $! a <> b
+foldArgs = foldM (\b f -> (b <>) <$> f) mempty
 
 evaluateArg :: ArgM a -> Context -> Either [String] a
 evaluateArg arg = runExcept . evalStateT arg
@@ -147,7 +128,7 @@ parseDateArg s = do
     $ parseDatetime' t0 s
 
 jsonDate :: UTCTime -> J.Value
-jsonDate = J.toJSON . (1e3 *) . nominalDiffTimeToSeconds . utcTimeToPOSIXSeconds
+jsonDate = J.Number . (1e3 *) . realToFrac . utcTimeToPOSIXSeconds
 
 data ArgCase = ArgCase
   { argMatch :: Maybe (T.Text, Regex)
@@ -161,6 +142,16 @@ data ArgCase = ArgCase
 newtype ArgHandler = ArgHandler
   { argCases :: [ArgCase]
   }
+
+parseQuery :: ObjectParser Query
+parseQuery = do
+  queryCount  <- parseFieldMaybe "count"
+  querySort   <- parseFieldMaybe "sort"   .!= Terms []
+  queryFilter <- parseFieldMaybe "filter" .!= Terms []
+  return Query{..}
+
+instance J.FromJSON Query where
+  parseJSON = withObjectParser "argument case" parseQuery
 
 parseCase :: ObjectParser ArgCase
 parseCase = do
@@ -207,7 +198,7 @@ evaluateCase ArgCase{..} a
     TypeDate   -> jsonDate <$> parseDateArg (T.unpack s)
     TypeNumber -> J.Number <$> maybe (fail $ "invalid numeric value: " ++ show s) return (readMaybe (T.unpack s))
   query groups s0 = do
-    queryCount <- either fail return $ J.parseEither J.parseJSON $ subph argCount
+    queryCount <- parsecount $ subph argCount
     let querySort = terms argSort
         queryFilter = terms argFilter
     return Query{..}
@@ -221,6 +212,10 @@ evaluateCase ArgCase{..} a
     subst _ = Nothing
   at = T.pack a
   aj = J.String at
+  parsecount (J.String "") = return Nothing
+  parsecount (J.String (TR.decimal -> Right (n, ""))) = return $ Just n
+  parsecount j = either fail return $ J.parseEither J.parseJSON j
+
 
 evaluateHandler :: ArgHandler -> Argument
 evaluateHandler = evaluateCases . argCases
@@ -233,8 +228,8 @@ instance J.FromJSON Option where
   parseJSON = withObjectParser "option" $ do
     flags <- parseFieldMaybe "flags" .!= V.empty
     let (short, long) = V.partitionWith shortlong flags
-    o <- parseArg <|> parseNoArg -- <|> parseArg
     help <- parseFieldMaybe "help" .!= ""
+    o <- parseNoArg <|> parseArg
     return $ Opt.Option
       (V.toList short)
       (V.toList long)
@@ -245,11 +240,12 @@ instance J.FromJSON Option where
     shortlong s = Right s
     parseNoArg = do
       q@Query{..} <- parseQuery
-      nop queryFilter
-      nop querySort
+      guard . JM.null =<< get -- checkUnparsedFields
+      noph queryFilter
+      noph querySort
       return $ Opt.NoArg $ return q
       where
-      nop = guard . not . any (any T.null . collectPlaceholdersJSON) . termsList
+      noph = guard . not . any (any T.null . collectPlaceholdersJSON) . termsList
     parseArg :: ObjectParser (Opt.ArgDescr ArgQuery)
     parseArg = do
       h <- parseHandler
