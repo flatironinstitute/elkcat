@@ -8,6 +8,8 @@ module Args
   ( Query(..)
   , Option
   , Argument
+  , parseArgument
+  , parseOption
   , runArgs
   ) where
 
@@ -139,8 +141,9 @@ data ArgCase = ArgCase
   , argCount :: J.Value -- with placeholders
   }
 
-newtype ArgHandler = ArgHandler
+data ArgHandler = ArgHandler
   { argCases :: [ArgCase]
+  , argLabel :: String
   }
 
 parseQuery :: ObjectParser Query
@@ -151,7 +154,7 @@ parseQuery = do
   return Query{..}
 
 instance J.FromJSON Query where
-  parseJSON = withObjectParser "argument case" parseQuery
+  parseJSON = withObjectParser "query" parseQuery
 
 parseCase :: ObjectParser ArgCase
 parseCase = do
@@ -171,10 +174,8 @@ instance J.FromJSON ArgCase where
 parseHandler :: ObjectParser ArgHandler
 parseHandler = do
   argCases <- parseField "switch" <|> return <$> parseCase
+  argLabel <- parseFieldMaybe "arg" .!= "ARG"
   return ArgHandler{..}
-
-instance J.FromJSON ArgHandler where
-  parseJSON = withObjectParser "argument handler" parseHandler
 
 matchMaybe :: Maybe (T.Text, Regex) -> String -> Maybe (A.Array Int String)
 matchMaybe Nothing s = Just (A.listArray (0,0) [s])
@@ -216,39 +217,39 @@ evaluateCase ArgCase{..} a
   parsecount (J.String (TR.decimal -> Right (n, ""))) = return $ Just n
   parsecount j = either fail return $ J.parseEither J.parseJSON j
 
-
 evaluateHandler :: ArgHandler -> Argument
 evaluateHandler = evaluateCases . argCases
 
-instance J.FromJSON Argument where
-  parseJSON j =
-    evaluateHandler <$> J.parseJSON j
+parseArgument :: Macros -> J.Value -> J.Parser Argument
+parseArgument macros = withObjectParser "argument" $ do
+  expandMacros macros
+  evaluateHandler <$> parseHandler
 
-instance J.FromJSON Option where
-  parseJSON = withObjectParser "option" $ do
-    flags <- parseFieldMaybe "flags" .!= V.empty
-    let (short, long) = V.partitionWith shortlong flags
-    help <- parseFieldMaybe "help" .!= ""
-    o <- parseNoArg <|> parseArg
-    return $ Opt.Option
-      (V.toList short)
-      (V.toList long)
-      o
-      help
+parseOption :: Macros -> J.Value -> J.Parser Option
+parseOption macros = withObjectParser "option" $ do
+  expandMacros macros
+  flags <- parseFieldMaybe "flags" .!= V.empty
+  let (short, long) = V.partitionWith shortlong flags
+  help <- parseFieldMaybe "help" .!= ""
+  o <- parseNoArg <|> parseArg
+  return $ Opt.Option
+    (V.toList short)
+    (V.toList long)
+    o
+    help
+  where
+  shortlong [c] = Left c
+  shortlong s = Right s
+  parseNoArg = do
+    q@Query{..} <- parseQuery
+    guard . JM.null =<< get -- checkUnparsedFields
+    noph queryFilter
+    noph querySort
+    return $ Opt.NoArg $ return q
     where
-    shortlong [c] = Left c
-    shortlong s = Right s
-    parseNoArg = do
-      q@Query{..} <- parseQuery
-      guard . JM.null =<< get -- checkUnparsedFields
-      noph queryFilter
-      noph querySort
-      return $ Opt.NoArg $ return q
-      where
-      noph = guard . not . any (any T.null . collectPlaceholdersJSON) . termsList
-    parseArg :: ObjectParser (Opt.ArgDescr ArgQuery)
-    parseArg = do
-      h <- parseHandler
-      arg <- parseFieldMaybe "arg" .!= "ARG"
-      return $ Opt.ReqArg (evaluateHandler h) arg
+    noph = guard . not . any (any T.null . collectPlaceholdersJSON) . termsList
+  parseArg :: ObjectParser (Opt.ArgDescr ArgQuery)
+  parseArg = do
+    h <- parseHandler
+    return $ Opt.ReqArg (evaluateHandler h) (argLabel h)
 

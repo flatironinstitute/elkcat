@@ -1,5 +1,6 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE ViewPatterns #-}
 
 module Placeholder
   ( Placeholder(..)
@@ -11,16 +12,25 @@ module Placeholder
   , substitutePlaceholdersBuilder
   , substitutePlaceholdersJSON
   , collectPlaceholdersJSON
+  , Macros
+  , expandMacros
   ) where
 
+import           Control.Monad ((<=<), guard, mfilter)
+import           Control.Monad.State (modify)
 import qualified Data.Aeson as J
 import qualified Data.Aeson.Key as JK
 import qualified Data.Aeson.KeyMap as JM
 import qualified Data.Aeson.Text as JT
+import           Data.Foldable (fold)
 import           Data.Maybe (fromMaybe)
 import qualified Data.Text as T
 import qualified Data.Text.Lazy as TL
 import qualified Data.Text.Lazy.Builder as TB
+import qualified Data.Text.Read as TR
+import qualified Data.Vector as V
+
+import JSON
 
 data Placeholder a
   = Literal !T.Text
@@ -85,6 +95,11 @@ substitutePlaceholdersValues :: (T.Text -> Maybe J.Value) -> Placeholders T.Text
 substitutePlaceholdersValues f = TL.toStrict . TB.toLazyText .
   substitutePlaceholdersBuilder (\s -> maybe (TB.singleton '{' <> TB.fromText s <> TB.singleton '}') jsonToText $ f s)
 
+substitutePlaceholdersObject :: (T.Text -> Maybe J.Value) -> J.Object -> J.Object
+substitutePlaceholdersObject sub = JM.mapKeyVal
+  (JK.fromText . substitutePlaceholdersValues sub . parsePlaceholders . JK.toText)
+  (substitutePlaceholdersJSON sub)
+
 substitutePlaceholdersJSON :: (T.Text -> Maybe J.Value) -> J.Value -> J.Value
 substitutePlaceholdersJSON sub j@(J.String s) = case parsePlaceholders s of
   [Literal _] -> j
@@ -92,9 +107,7 @@ substitutePlaceholdersJSON sub j@(J.String s) = case parsePlaceholders s of
   m -> J.String $ substitutePlaceholdersValues sub m
 substitutePlaceholdersJSON sub j@(J.Object m)
   | JM.null m = fromMaybe j $ sub T.empty -- treat empty object as "{}"
-  | otherwise = J.Object $ JM.mapKeyVal
-    (JK.fromText . substitutePlaceholdersValues sub . parsePlaceholders . JK.toText)
-    (substitutePlaceholdersJSON sub) m
+  | otherwise = J.Object $ substitutePlaceholdersObject sub m
 substitutePlaceholdersJSON sub (J.Array j) = J.Array $
   fmap (substitutePlaceholdersJSON sub) j
 substitutePlaceholdersJSON _ j = j
@@ -110,3 +123,20 @@ collectPlaceholdersJSON (J.Object m)
     (\k v -> collectPlaceholdersText (JK.toText k) <> collectPlaceholdersJSON v) m
 collectPlaceholdersJSON (J.Array j) = foldMap collectPlaceholdersJSON j
 collectPlaceholdersJSON _ = mempty
+
+jsonLookup :: J.Value -> T.Text -> Maybe J.Value
+jsonLookup (J.Object o) = (`JM.lookup` o) . JK.fromText
+jsonLookup (J.Array a) = (a V.!?) . fst <=< mfilter (T.null . snd) . either (const Nothing) Just . TR.decimal
+jsonLookup j = (j <$) . guard . T.null
+
+type Macro = J.Object
+type Macros = JM.KeyMap Macro
+
+expandMacrosObject :: Macros -> J.Object -> J.Object
+expandMacrosObject macros obj = JM.union base expanded where
+  base = JM.difference obj macros
+  expanded = fold $ JM.intersectionWith expand obj macros
+  expand args macro = substitutePlaceholdersObject (jsonLookup args) macro
+
+expandMacros :: Macros -> ObjectParser ()
+expandMacros = modify . expandMacrosObject

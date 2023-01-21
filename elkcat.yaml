@@ -22,8 +22,11 @@ index: log-*
 timestamp: '@timestamp'
 # number of results in each request
 size: 10000
-# message format containing {FIELD} placeholders with optional {FIELD:FORMAT} or {FIELD:[+-]WIDTH} (left or right padding)
-format: '{timestamp:strict_date_optional_time} {message}'
+# message format containing {FIELD} placeholders with optional format:
+#   {FIELD:ESFORMAT}: elastic search "format" option
+#   {FIELD:DATEFMT}: date format in local timezone (e.g. "%Y-%m-%d %H:%M:%S")
+#   {FIELD:[+-]WIDTH}: left (positive) or right (negative) padding
+format: '{timestamp:%F %T%Q} {message}'
 macros:
   term:
     switch:

@@ -9,6 +9,7 @@ module Config
   ) where
 
 import           Control.Arrow ((***))
+import qualified Data.Aeson.KeyMap as JM
 import qualified Data.Aeson.Types as J
 import qualified Data.ByteString as BS
 import qualified Data.CaseInsensitive as CI
@@ -95,9 +96,10 @@ instance J.FromJSON Config where
     confIndex <- parseField "index"
     confSize <- parseFieldMaybe' "size" .!= 1000
     confFormat <- parseField "format"
-    confOpts <- parseField "opts"
+    macros <- parseFieldMaybe "macros" .!= JM.empty
     confDefault <- (<> def) <$> parseFieldMaybe "default" .!= mempty
-    confArgs <- parseField "args"
+    confOpts <- explicitParseField (J.listParser $ parseOption macros) "opts"
+    confArgs <- explicitParseField (parseArgument macros) "args"
     confDebug <- parseFieldMaybe "debug" .!= False
     return Config{..}
 
