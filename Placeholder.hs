@@ -12,6 +12,7 @@ module Placeholder
   , substitutePlaceholdersBuilder
   , substitutePlaceholdersObject
   , substitutePlaceholdersJSON
+  , collectPlaceholdersObject
   , collectPlaceholdersJSON
   , Macros
   , expandMacros
@@ -116,12 +117,15 @@ substitutePlaceholdersJSON _ j = j
 collectPlaceholdersText :: T.Text -> [T.Text]
 collectPlaceholdersText = collectPlaceholders . parsePlaceholders
 
+collectPlaceholdersObject :: J.Object -> [T.Text]
+collectPlaceholdersObject m = JM.foldMapWithKey
+  (\k v -> collectPlaceholdersText (JK.toText k) <> collectPlaceholdersJSON v) m
+
 collectPlaceholdersJSON :: J.Value -> [T.Text]
 collectPlaceholdersJSON (J.String s) = collectPlaceholdersText s
 collectPlaceholdersJSON (J.Object m)
   | JM.null m = [T.empty]
-  | otherwise = JM.foldMapWithKey
-    (\k v -> collectPlaceholdersText (JK.toText k) <> collectPlaceholdersJSON v) m
+  | otherwise = collectPlaceholdersObject m
 collectPlaceholdersJSON (J.Array j) = foldMap collectPlaceholdersJSON j
 collectPlaceholdersJSON _ = mempty
 

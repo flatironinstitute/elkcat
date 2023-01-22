@@ -13,6 +13,8 @@ import qualified Data.ByteString as BS
 import qualified Data.ByteString.Builder as BSB
 import qualified Data.ByteString.Char8 as BSC
 import qualified Data.ByteString.Lazy.Char8 as BSLC
+import           Data.Function (on)
+import           Data.List (nubBy)
 import qualified Data.Text as T
 import qualified Data.Text.Lazy as TL
 import qualified Data.Text.IO as TIO
@@ -108,6 +110,12 @@ fieldFormat d (FieldFormat n fw) = justify fw $ getf n where
 formatMessage :: Format -> Doc -> T.Text
 formatMessage fmt doc = substitutePlaceholders (fieldFormat doc) fmt
 
+-- |which field this sort term sorts on (invalid for invalid sort terms)
+querySortKey :: J.Value -> T.Text
+querySortKey (J.String s) = s
+querySortKey (J.Object m) = foldMap JK.toText $ JM.keys m
+querySortKey _ = T.empty
+
 main :: IO ()
 main = do
   conffile <- maybe (getXdgDirectory XdgConfig "elkcat.yaml") return =<< lookupEnv "ELKCAT"
@@ -135,7 +143,7 @@ main = do
 
   let fmt = formatMessage confFormat
       req = "track_total_hits" J..= False
-        <> "sort" J..= querySort
+        <> "sort" J..= nubBy ((==) `on` querySortKey) querySort
         <> "_source" J..= False
         <> "fields" `JE.pair` JE.list id (formatFields confFormat)
         <> "query" `JE.pair` (JE.pairs

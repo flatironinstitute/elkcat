@@ -16,8 +16,7 @@ module Args
 import           Control.Applicative ((<|>))
 import           Control.Monad (msum, guard, foldM)
 import           Control.Monad.Except (Except, throwError, runExcept)
-import           Control.Monad.State (StateT, get, gets, modify, state, evalStateT)
-import qualified Data.Aeson.Key as JK
+import           Control.Monad.State (StateT, gets, modify, state, evalStateT)
 import qualified Data.Aeson.KeyMap as JM
 import qualified Data.Aeson.Types as J
 import qualified Data.Array as A
@@ -43,37 +42,32 @@ import Time
    \| -o or
  -}
 
-newtype Terms = Terms{ termsList :: [J.Value] }
-  deriving (Semigroup, Monoid, J.ToJSON)
+type Terms = [J.Value]
 
 jsonTerms :: J.Value -> Terms
-jsonTerms J.Null = Terms []
-jsonTerms (J.Array v) = Terms $ V.toList v
-jsonTerms j = Terms [j]
+jsonTerms J.Null = []
+jsonTerms (J.Array v) = V.toList v
+jsonTerms j = [j]
 
 data Query = Query
   { queryCount :: Maybe Word
   , querySort :: Terms
   , queryFilter :: Terms
+  , queryMustNot :: Terms
   }
 
--- |which field this sort term sorts on (invalid for invalid sort terms)
-querySortKey :: J.Value -> T.Text
-querySortKey (J.String s) = s
-querySortKey (J.Object m) = foldMap JK.toText $ JM.keys m
-querySortKey _ = T.empty
-
 instance Semigroup Query where
-  Query n1 s1 f1 <> Query n2 s2 f2 = Query
-    (n1 <|> n2)
-    (s1 <> Terms (filter (\s -> querySortKey s `notElem` map querySortKey (termsList s1)) (termsList s2)))
+  Query c1 s1 f1 n1 <> Query c2 s2 f2 n2 = Query
+    (c1 <|> c2)
+    (s1 <> s2)
     (f1 <> f2)
+    (n1 <> n2)
 
 instance Monoid Query where
-  mempty = Query Nothing mempty mempty
+  mempty = Query Nothing mempty mempty mempty
 
 instance Default Query where
-  def = mempty{ querySort = Terms [J.String "_doc"] }
+  def = mempty{ querySort = [J.String "_doc"] }
 
 data Context = Context
   { contextTime :: UTCTime
@@ -147,9 +141,10 @@ data ArgHandler = ArgHandler
 
 parseQuery :: ObjectParser Query
 parseQuery = do
-  queryCount  <- explicitParseFieldMaybe (\j -> J.parseJSON j <|> parseReader TR.decimal j) "count"
-  querySort   <- foldMap jsonTerms <$> parseFieldMaybe "sort"
-  queryFilter <- foldMap jsonTerms <$> parseFieldMaybe "filter"
+  queryCount   <- explicitParseFieldMaybe (\j -> J.parseJSON j <|> parseReader TR.decimal j) "count"
+  querySort    <- foldMap jsonTerms <$> parseFieldMaybe "sort"
+  queryFilter  <- foldMap jsonTerms <$> parseFieldMaybe "filter"
+  queryMustNot <- foldMap jsonTerms <$> parseFieldMaybe "must_not"
   return Query{..}
 
 instance J.FromJSON Query where
@@ -160,6 +155,7 @@ queryJSON Query{..} = JM.fromList
   [ "count" J..= queryCount
   , "sort" J..= querySort
   , "filter" J..= queryFilter
+  , "must_not" J..= queryMustNot
   ]
 
 instance J.ToJSON Query where
@@ -240,13 +236,11 @@ parseOption macros = withObjectParser "option" $ do
   shortlong [c] = Left c
   shortlong s = Right s
   parseNoArg = do
-    q@Query{..} <- parseQuery
-    guard . JM.null =<< get -- checkUnparsedFields
-    noph queryFilter
-    noph querySort
+    -- make sure there are no argument placeholders
+    guard . not . any T.null =<< gets collectPlaceholdersObject
+    q <- parseQuery
+    guard =<< gets JM.null -- checkUnparsedFields
     return $ Opt.NoArg $ return q
-    where
-    noph = guard . not . any (any T.null . collectPlaceholdersJSON) . termsList
   parseArg :: ObjectParser (Opt.ArgDescr ArgQuery)
   parseArg = do
     h <- parseHandler

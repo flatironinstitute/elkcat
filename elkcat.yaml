@@ -109,6 +109,7 @@ macros:
 #   sort: fields to sort by, passed as the ES sort query argument as-is.
 #     _doc is always added as the final sort term to make search_after valid (XXX)
 #   filter: search terms, generally included in a query bool filter
+#   must_not: negated search terms, generally included in a query bool must_not
 default:
   sort:
     - "@timestamp"
@@ -117,7 +118,7 @@ default:
 # All options can specify:
 #   flags: list of long or short flag names (without preceding "-")
 #   help: help text to include in option description
-#   count, sort, and filter query terms (as in default, above)
+#   count, sort, filter, and must_not query terms (as in default, above)
 #
 # Options can also take an argument, which is used to substitute any empty '{}'
 # placeholders in the query specification.  These options can specify:
@@ -134,9 +135,10 @@ default:
 #   switch: a list of arguments cases to match on, each of which can include:
 #     match, type, split, count, sort, filter, and macro calls
 #
-# Finally, options can include any number of macro calls, which are additional
-# keys matching a macro name in macros above, the body of which is substituted
-# in using the object specified.
+# Finally, options can include macro calls, which are additional keys matching
+# a macro name in macros above, the body of which is substituted in using the
+# object specified. (Multiple macros are allowed, but precedence is undefined;
+# keys in the specification itself always take precedence.)
 #
 # Query values gathered from options and arguments are combined in-order,
 # with the default values at the end.
@@ -203,8 +205,7 @@ help: |
   TIMESTAMP arguments may be absolute or relative in various forms, including
   "2 days ago" or "last Thursday".  Timestamps are interpreted relative to the
   current time for the first argument, or any preceding time for subsequent
-  arguments.  For example, "-a '2023-01-15 17:00:00' -b '5 minutes'" selects
-  until 5:05 pm.
+  arguments.  For example, "-a 17:00 -b '5 minutes'" selects until 5:05 pm.
 
   TERM arguments can be an exact value, a comma-separated list of values, a
   wildcard match (using "*?"), or a regular expression (as "/REGEX/[i]").
