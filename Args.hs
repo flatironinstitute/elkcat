@@ -220,10 +220,12 @@ evaluateCase ArgCase{..} a
 evaluateHandler :: ArgHandler -> Argument
 evaluateHandler = evaluateCases . argCases
 
-parseArgument :: Macros -> J.Value -> J.Parser Argument
+parseArgument :: Macros -> J.Value -> J.Parser (Argument, String, String)
 parseArgument macros = withObjectParser "argument" $ do
   expandMacros macros
-  evaluateHandler <$> parseHandler
+  h <- parseHandler
+  help <- parseFieldMaybe "help" .!= ""
+  return (evaluateHandler h, argLabel h, help)
 
 parseOption :: Macros -> J.Value -> J.Parser Option
 parseOption macros = withObjectParser "option" $ do

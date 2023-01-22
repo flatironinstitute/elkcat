@@ -1,5 +1,9 @@
 # Example/default elkcat config file
 # Place in $XDG_CONFIG_HOME/elkcat.yaml or $ELKCAT
+# This example is based on the default logstash SYSLOG parser.
+# It will likely need to be changed for your specific schema.
+
+# how to connect to the elasticsearch database
 elasticsearch:
   # url for elasticsearch endpoint
   url: http://127.0.0.1:9200/
@@ -16,87 +20,198 @@ elasticsearch:
   # additional headers to pass with each ES request
   headers:
     #accept-encoding: ' ' # disable gzip, etc
+
 # index or index pattern to query
-index: log-*
-# timestamp field used for filtering and sorting
-timestamp: '@timestamp'
-# number of results in each request
+index: syslog-*
+
+# number of results in each request, using the "search_after" paging mechanism.
 size: 10000
+
 # message format containing {FIELD} placeholders with optional format:
 #   {FIELD:ESFORMAT}: elastic search "format" option
 #   {FIELD:DATEFMT}: date format in local timezone (e.g. "%Y-%m-%d %H:%M:%S")
 #   {FIELD:[+-]WIDTH}: left (positive) or right (negative) padding
-format: '{timestamp:%F %T%Q} {message}'
+format: '{syslog_timestamp:%F %T%Q} {syslog_hostname} {syslog_program}[{syslog_pid}]: {syslog_message}'
+
+# macros that can be used to define options and arguments.
+# Macros are called by name and passed an object, the keys of which are
+# used to substitute {placeholders} in the macro definition.
 macros:
-  term:
+  keyword:
+    arg: TERM
+    help: >
+      Select {field} matching TERM.
     switch:
     - match: '/(.*)/'
       filter:
         regexp:
-          '{}':
+          '{field}':
             value: '{1}'
     - match: '/(.*)/i'
       filter:
         regexp:
-          '{}':
+          '{field}':
             value: '{1}'
             case_insensitive: true
-    - match: '.*{delim|,}.*'
+    - match: '.*,.*'
       filter:
         terms:
-          '{}': '{0}'
-      split: '{delim|,}'
+          '{field}': {}
+      split: ','
+    - match: '.*[\*?].*'
+      filter:
+        wildcard:
+          '{field}':
+            value: {}
     - filter:
         term:
-          '{}': '{0}'
-args:
-- flags: [t,test]
-  term:
-    field: hostname
+          '{field}': {}
+  text:
+    arg: QUERY
+    help: >
+      Select {field} matching QUERY.
+    switch:
+    - match: '/(.*)/'
+      filter:
+        regexp:
+          '{field}':
+            value: '{1}'
+    - match: '/(.*)/i'
+      filter:
+        regexp:
+          '{field}':
+            value: '{1}'
+            case_insensitive: true
+    - match: '[+-].*'
+      filter:
+        simple_query_string:
+          query: {}
+          fields: ['{field}']
+          default_operator: AND
+    - filter:
+        match_phrase:
+          '{field}':
+            query: {}
+            operator: AND
+  timerange:
+    type: date
+    arg: TIMESTAMP
+    help: >
+      Select messages with {field} {op} TIMESTAMP.
+    filter:
+      range:
+        '{field}':
+          '{op}': '{}'
+
+# default query specification. Query specifications can consist of:
+#   count: maximum number of results to return (queried in pages of size, above).
+#     null or missing means unlimited
+#   sort: fields to sort by, passed as the ES sort query argument as-is.
+#     _doc is always added as the final sort term to make search_after valid (XXX)
+#   filter: search terms, generally included in a query bool filter
+default:
+  sort:
+    - "@timestamp"
+
+# option specifications, which can modify the default query.
+# All options can specify:
+#   flags: list of long or short flag names (without preceding "-")
+#   help: help text to include in option description
+#   count, sort, and filter query terms (as in default, above)
+#
+# Options can also take an argument, which is used to substitute any empty '{}'
+# placeholders in the query specification.  These options can specify:
+#   arg: label for argument in help text.
+#   match: regular expression which this argument must match.
+#     Arguments are always matched in full: ^$ are implicit.
+#     Parenthesized submatches can be used to substitute '{1}', '{2}', etc.
+#     placeholders in the query specification.
+#   type: 'string' (default), 'date', or 'number', defining how the argument
+#     will be parsed and substituted in placeholders.
+#   split: a string on which to split the argument, in which case '{}' will be
+#     substituted as a list of values of the given type.
+# Additionally, an option can specify multiple alternatives using:
+#   switch: a list of arguments cases to match on, each of which can include:
+#     match, type, split, count, sort, filter, and macro calls
+#
+# Finally, options can include any number of macro calls, which are additional
+# keys matching a macro name in macros above, the body of which is substituted
+# in using the object specified.
+#
+# Query values gathered from options and arguments are combined in-order,
+# with the default values at the end.
+opts:
+- flags: [r,reverse]
+  sort: 
+    - "@timestamp": desc
+  help: Reverse sort order (newest to oldest).
+- flags: ['n',count]
+  count: {}
+  arg: COUNT
+  help: Select at most COUNT messages.
+- flags: [a,after]
+  timerange:
+    field: '@timestamp'
+    op: gte
+- flags: [b,before]
+  timerange:
+    field: '@timestamp'
+    op: lt
+- flags: [h,host]
+  keyword:
+    field: syslog_hostname
+- flags: [I,ip]
   filter:
     term:
-      hostname:
-        value: {}
-- flags: [h,host]
-  switch:
-  - match: '/(.*)/'
-    filter:
-      regexp:
-        hostname:
-          value: '{1}'
-  - match: '/(.*)/i'
-    filter:
-      regexp:
-        hostname:
-          value: '{1}'
-          case_insensitive: true
-  - match: '.*,.*'
-    filter:
-      terms:
-        hostname: '{}'
+      received_from: '{}'
+  arg: IP
+  help: |
+    Select messages by IP address,
+    which may be a subnet specification.
+- flags: [S,severity]
+  filter:
+    terms:
+      syslog_severity: {}
     split: ','
-  - filter:
-      term:
-        hostname: '{}'
-- switch:
-  - match: '/(.*)/'
-    filter:
-      regexp:
-        message:
-          value: '{1}'
-  - match: '/(.*)/'
-    filter:
-      regexp:
-        hostname:
-          value: '{1}'
-  - filter:
-      match:
-        message:
-          query: '{}'
-# -h host => term
-# -h host1 -h host2 => terms
-# -h host1,host2 => terms
-# -h host* => wildcard
-# -m foo.bar => regex
-# foo bar => match (multi/combined?)
-# case insensitive?
+  arg: VALUE
+  help: |
+    Select messages with severity VALUE,
+    which may be a comma-separated list.
+- flags: [F,facility]
+  filter:
+    terms:
+      syslog_facility: {}
+    split: ','
+  arg: VALUE
+  help: |
+    Select messages with facility VALUE,
+    which may be a comma-separated list.
+- flags: [P,program]
+  keyword:
+    field: syslog_program
+
+# how to handle arguments without flags.
+# This is a single argument handler just as with options above, allowing all
+# the same keys except "flags".
+args:
+  text:
+    field: message
+
+# help text to include at the top of the output
+help: |
+
+  TIMESTAMP arguments may be absolute or relative in various forms, including
+  "2 days ago" or "last Thursday".  Timestamps are interpreted relative to the
+  current time for the first argument, or any preceding time for subsequent
+  arguments.  For example, "-a '2023-01-15 17:00:00' -b '5 minutes'" selects
+  until 5:05 pm.
+
+  TERM arguments can be an exact value, a comma-separated list of values, a
+  wildcard match (using "*?"), or a regular expression (as "/REGEX/[i]").
+
+  QUERY arguments can be a full-text search phrase, a simple elastic query
+  (starting with "+-"), or a regular expression (as "/REGEX/[i]").  When
+  possible avoid regular expressions as they can be slow.
+
+# print raw json requests (and documents?)
+debug: True

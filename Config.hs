@@ -60,6 +60,9 @@ data Config = Config
   , confDefault :: Query
   , confOpts :: [Option]
   , confArgs :: Argument
+  , confArgLabel :: String
+  , confArgHelp :: String
+  , confHelp :: String
   , confDebug :: Bool
   }
 
@@ -99,7 +102,8 @@ instance J.FromJSON Config where
     macros <- parseFieldMaybe "macros" .!= JM.empty
     confDefault <- (<> def) <$> parseFieldMaybe "default" .!= mempty
     confOpts <- explicitParseField (J.listParser $ parseOption macros) "opts"
-    confArgs <- explicitParseField (parseArgument macros) "args"
+    (confArgs, confArgLabel, confArgHelp) <- explicitParseField (parseArgument macros) "args"
+    confHelp <- parseFieldMaybe "help" .!= ""
     confDebug <- parseFieldMaybe "debug" .!= False
     return Config{..}
 

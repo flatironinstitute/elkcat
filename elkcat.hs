@@ -128,7 +128,9 @@ main = do
     ([], Right q) -> return (q <> confDefault)
     (err, qerr) -> do
       mapM_ (hPutStrLn stderr) (either (++) (\_ -> id) qerr err)
-      hPutStrLn stderr $ Opt.usageInfo ("Usage: " ++ prog ++ " [OPTIONS]\n") confOpts
+      hPutStrLn stderr $ Opt.usageInfo ("Usage: " ++ prog ++ " OPTION|" ++ confArgLabel ++ " ...\n"
+        ++ confHelp
+        ++ "\n  " ++ confArgLabel ++ "    " ++ confArgHelp) confOpts
       exitFailure
 
   let fmt = formatMessage confFormat
