@@ -29,6 +29,7 @@ executable elkcat
     Config
     JSON
     Placeholder
+    Query
     Time
   hs-source-dirs:
       .

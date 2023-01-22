@@ -20,7 +20,6 @@ import           Control.Monad.State (StateT, gets, modify, state, evalStateT)
 import qualified Data.Aeson.KeyMap as JM
 import qualified Data.Aeson.Types as J
 import qualified Data.Array as A
-import           Data.Default (Default(..))
 import qualified Data.Text as T
 import qualified Data.Text.Read as TR
 import           Data.Time.Clock (UTCTime, getCurrentTime)
@@ -34,40 +33,7 @@ import qualified System.Console.GetOpt as Opt
 import Placeholder
 import JSON
 import Time
-
-{-
- TODO:
-   \! -n not
-   \( ... \) grouping
-   \| -o or
- -}
-
-type Terms = [J.Value]
-
-jsonTerms :: J.Value -> Terms
-jsonTerms J.Null = []
-jsonTerms (J.Array v) = V.toList v
-jsonTerms j = [j]
-
-data Query = Query
-  { queryCount :: Maybe Word
-  , querySort :: Terms
-  , queryFilter :: Terms
-  , queryMustNot :: Terms
-  }
-
-instance Semigroup Query where
-  Query c1 s1 f1 n1 <> Query c2 s2 f2 n2 = Query
-    (c1 <|> c2)
-    (s1 <> s2)
-    (f1 <> f2)
-    (n1 <> n2)
-
-instance Monoid Query where
-  mempty = Query Nothing mempty mempty mempty
-
-instance Default Query where
-  def = mempty{ querySort = [J.String "_doc"] }
+import Query
 
 data Context = Context
   { contextTime :: UTCTime
@@ -138,31 +104,6 @@ data ArgHandler = ArgHandler
   { argCases :: [ArgCase]
   , argLabel :: String
   }
-
-parseQuery :: ObjectParser Query
-parseQuery = do
-  queryCount   <- explicitParseFieldMaybe (\j -> J.parseJSON j <|> parseReader TR.decimal j) "count"
-  querySort    <- foldMap jsonTerms <$> parseFieldMaybe "sort"
-  queryFilter  <- foldMap jsonTerms <$> parseFieldMaybe "filter"
-  queryMustNot <- foldMap jsonTerms <$> parseFieldMaybe "must_not"
-  return Query{..}
-
-instance J.FromJSON Query where
-  parseJSON = withObjectParser "query" parseQuery
-
-queryJSON :: Query -> J.Object
-queryJSON Query{..} = JM.fromList
-  [ "count" J..= queryCount
-  , "sort" J..= querySort
-  , "filter" J..= queryFilter
-  , "must_not" J..= queryMustNot
-  ]
-
-instance J.ToJSON Query where
-  toJSON = J.Object . queryJSON
-
-queryKeys :: J.Object
-queryKeys = queryJSON mempty
 
 parseCase :: ObjectParser ArgCase
 parseCase = do
