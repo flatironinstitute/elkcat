@@ -10,6 +10,7 @@ module Placeholder
   , jsonToText
   , substitutePlaceholders
   , substitutePlaceholdersBuilder
+  , substitutePlaceholdersObject
   , substitutePlaceholdersJSON
   , collectPlaceholdersJSON
   , Macros

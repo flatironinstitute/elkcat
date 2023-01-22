@@ -16,7 +16,7 @@ module Args
 import           Control.Applicative ((<|>))
 import           Control.Monad (msum, guard, foldM)
 import           Control.Monad.Except (Except, throwError, runExcept)
-import           Control.Monad.State (StateT, get, gets, modify, evalStateT)
+import           Control.Monad.State (StateT, get, gets, modify, state, evalStateT)
 import qualified Data.Aeson.Key as JK
 import qualified Data.Aeson.KeyMap as JM
 import qualified Data.Aeson.Types as J
@@ -38,6 +38,7 @@ import Time
 
 {-
  TODO:
+   \! -n not
    \( ... \) grouping
    \| -o or
  -}
@@ -49,9 +50,6 @@ jsonTerms :: J.Value -> Terms
 jsonTerms J.Null = Terms []
 jsonTerms (J.Array v) = Terms $ V.toList v
 jsonTerms j = Terms [j]
-
-instance J.FromJSON Terms where
-  parseJSON = return . jsonTerms
 
 data Query = Query
   { queryCount :: Maybe Word
@@ -86,6 +84,9 @@ type ArgQuery = ArgM Query
 
 instance {-# OVERLAPPING #-} MonadFail ArgM where
   fail = throwError . return
+
+argParseJSON :: (a -> J.Parser b) -> a -> ArgM b
+argParseJSON p = either fail return . J.parseEither p
 
 foldArgs :: (Monad m, Monoid a) => [m a] -> m a
 foldArgs = foldM (\b f -> (b <>) <$> f) mempty
@@ -136,9 +137,7 @@ data ArgCase = ArgCase
   { argMatch :: Maybe (T.Text, Regex)
   , argSplit :: Maybe T.Text
   , argType :: ArgType
-  , argFilter
-  , argSort
-  , argCount :: J.Value -- with placeholders
+  , argQuery :: J.Object -- remaining fields, with placeholders
   }
 
 data ArgHandler = ArgHandler
@@ -148,13 +147,26 @@ data ArgHandler = ArgHandler
 
 parseQuery :: ObjectParser Query
 parseQuery = do
-  queryCount  <- parseFieldMaybe "count"
-  querySort   <- parseFieldMaybe "sort"   .!= Terms []
-  queryFilter <- parseFieldMaybe "filter" .!= Terms []
+  queryCount  <- explicitParseFieldMaybe (\j -> J.parseJSON j <|> parseReader TR.decimal j) "count"
+  querySort   <- foldMap jsonTerms <$> parseFieldMaybe "sort"
+  queryFilter <- foldMap jsonTerms <$> parseFieldMaybe "filter"
   return Query{..}
 
 instance J.FromJSON Query where
   parseJSON = withObjectParser "query" parseQuery
+
+queryJSON :: Query -> J.Object
+queryJSON Query{..} = JM.fromList
+  [ "count" J..= queryCount
+  , "sort" J..= querySort
+  , "filter" J..= queryFilter
+  ]
+
+instance J.ToJSON Query where
+  toJSON = J.Object . queryJSON
+
+queryKeys :: J.Object
+queryKeys = queryJSON mempty
 
 parseCase :: ObjectParser ArgCase
 parseCase = do
@@ -163,9 +175,7 @@ parseCase = do
     "match"
   argSplit  <- parseFieldMaybe "split"
   argType   <- parseFieldMaybe "type"   .!= TypeString
-  argFilter <- parseFieldMaybe "filter" .!= J.Null
-  argSort   <- parseFieldMaybe "sort"   .!= J.Null
-  argCount  <- parseFieldMaybe "count"  .!= J.Null
+  argQuery <- state (\o -> (JM.intersection o queryKeys, JM.difference o queryKeys))
   return ArgCase{..}
 
 instance J.FromJSON ArgCase where
@@ -173,8 +183,8 @@ instance J.FromJSON ArgCase where
 
 parseHandler :: ObjectParser ArgHandler
 parseHandler = do
-  argCases <- parseField "switch" <|> return <$> parseCase
   argLabel <- parseFieldMaybe "arg" .!= "ARG"
+  argCases <- parseField "switch" <|> return <$> parseCase
   return ArgHandler{..}
 
 matchMaybe :: Maybe (T.Text, Regex) -> String -> Maybe (A.Array Int String)
@@ -183,13 +193,10 @@ matchMaybe (Just (_, r)) s
   | Just ("", groups, "") <- RE.matchOnceText r s = Just (fmap fst groups)
   | otherwise = Nothing
 
-evaluateCases :: [ArgCase] -> Argument
-evaluateCases cases s = msum $ map (`evaluateCase` s) cases
-
 evaluateCase :: ArgCase -> Argument
 evaluateCase ArgCase{..} a
   | Just groups <- matchMaybe argMatch a =
-    query groups =<< maybe (format at)
+    build groups =<< maybe (format at)
       (\d -> J.toJSON <$> mapM format (T.splitOn d at))
       argSplit
   | otherwise = fail $ "argument " ++ show a ++ " does not match " ++ foldMap (show . fst) argMatch
@@ -198,34 +205,24 @@ evaluateCase ArgCase{..} a
     TypeString -> return $ J.String s
     TypeDate   -> jsonDate <$> parseDateArg (T.unpack s)
     TypeNumber -> J.Number <$> maybe (fail $ "invalid numeric value: " ++ show s) return (readMaybe (T.unpack s))
-  query groups s0 = do
-    queryCount <- parsecount $ subph argCount
-    let querySort = terms argSort
-        queryFilter = terms argFilter
-    return Query{..}
-    where
-    terms = jsonTerms . subph
-    subph = substitutePlaceholdersJSON subst
+  build groups s0 = argParseJSON (parseObject parseQuery) 
+    $ substitutePlaceholdersObject subst argQuery where
     subst "" = Just s0
     subst (TR.decimal -> Right (i, ""))
-      | i == 0 = Just aj
+      | i == 0 = Just $ J.String at
       | A.inRange (A.bounds groups) i = Just $ J.String $ T.pack $ groups A.! i
     subst _ = Nothing
   at = T.pack a
-  aj = J.String at
-  parsecount (J.String "") = return Nothing
-  parsecount (J.String (TR.decimal -> Right (n, ""))) = return $ Just n
-  parsecount j = either fail return $ J.parseEither J.parseJSON j
 
-evaluateHandler :: ArgHandler -> Argument
-evaluateHandler = evaluateCases . argCases
+evaluateCases :: [ArgCase] -> Argument
+evaluateCases cases s = msum $ map (`evaluateCase` s) cases
 
 parseArgument :: Macros -> J.Value -> J.Parser (Argument, String, String)
 parseArgument macros = withObjectParser "argument" $ do
   expandMacros macros
   h <- parseHandler
   help <- parseFieldMaybe "help" .!= ""
-  return (evaluateHandler h, argLabel h, help)
+  return (evaluateCases $ argCases h, argLabel h, help)
 
 parseOption :: Macros -> J.Value -> J.Parser Option
 parseOption macros = withObjectParser "option" $ do
@@ -253,5 +250,4 @@ parseOption macros = withObjectParser "option" $ do
   parseArg :: ObjectParser (Opt.ArgDescr ArgQuery)
   parseArg = do
     h <- parseHandler
-    return $ Opt.ReqArg (evaluateHandler h) (argLabel h)
-
+    return $ Opt.ReqArg (evaluateCases $ argCases h) (argLabel h)
