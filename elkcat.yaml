@@ -10,11 +10,11 @@ elasticsearch:
 
   # optional authentication methods
   #basic-auth:
-    #username: 
-    #password: 
+    #username:
+    #password:
   #proxy-auth:
-    #username: 
-    #password: 
+    #username:
+    #password:
   #bearer-auth: token
 
   # additional headers to pass with each ES request
@@ -92,7 +92,6 @@ macros:
         match_phrase:
           '{field}':
             query: {}
-            operator: AND
   timerange:
     type: date
     arg: TIMESTAMP
@@ -119,6 +118,8 @@ default:
 #   flags: list of long or short flag names (without preceding "-")
 #   help: help text to include in option description
 #   count, sort, filter, and must_not query terms (as in default, above)
+# Alternatively, rather than query terms, options can specify:
+#   op: '(', ')', '|', '!' representing special joining operations
 #
 # Options can also take an argument, which is used to substitute any empty '{}'
 # placeholders in the query specification.  These options can specify:
@@ -143,14 +144,20 @@ default:
 # Query values gathered from options and arguments are combined in-order,
 # with the default values at the end.
 opts:
-- flags: [r,reverse]
-  sort: 
-    - "@timestamp": desc
-  help: Reverse sort order (newest to oldest).
+- flags: [not]
+  op: not
+  help: 'Same as "!" (below)'
+- flags: [o,or]
+  op: or
+  help: 'Same as "|" (below)'
 - flags: ['n',count]
   count: {}
   arg: COUNT
   help: Select at most COUNT messages.
+- flags: [r,reverse]
+  sort:
+    - "@timestamp": desc
+  help: Reverse sort order (newest to oldest).
 - flags: [a,after]
   timerange:
     field: '@timestamp'
@@ -196,11 +203,31 @@ opts:
 # This is a single argument handler just as with options above, allowing all
 # the same keys except "flags".
 args:
+  switch:
+  - match: '\('
+    op: '('
+  - match: '\)'
+    op: ')'
+  - match: '\|'
+    op: '|'
+  - match: '!'
+    op: '!'
   text:
     field: message
+  help: |
+    Select messages matching QUERY.
+      '('           Begin a grouped set of arguments.
+      ')'           End a grouped set of arguments.
+      '!'           Exclude messages matching the immediately next argument
+                    (NOT: high precedence).
+      '|'           Select messages matching either left or right arguments
+                    (OR: low precedence).
 
 # help text to include at the top of the output
 help: |
+
+  Arguments can be grouped and joined by operators (above), similar to find(1).
+  By default all terms must match (AND).
 
   TIMESTAMP arguments may be absolute or relative in various forms, including
   "2 days ago" or "last Thursday".  Timestamps are interpreted relative to the

@@ -13,10 +13,8 @@ module Args
   , runArgs
   ) where
 
-import           Control.Applicative ((<|>))
-import           Control.Monad (msum, guard, foldM)
-import           Control.Monad.Except (Except, throwError, runExcept)
-import           Control.Monad.State (StateT, gets, modify, state, evalStateT)
+import           Control.Monad (msum, guard)
+import           Control.Monad.State (gets, modify)
 import qualified Data.Aeson.KeyMap as JM
 import qualified Data.Aeson.Types as J
 import qualified Data.Array as A
@@ -39,28 +37,16 @@ data Context = Context
   { contextTime :: UTCTime
   }
 
-type ArgM = StateT Context (Except [String])
-type ArgQuery = ArgM Query
-
-instance {-# OVERLAPPING #-} MonadFail ArgM where
-  fail = throwError . return
+type ArgM = QueryM Context
+type ArgQuery = QueryEval Context
 
 argParseJSON :: (a -> J.Parser b) -> a -> ArgM b
 argParseJSON p = either fail return . J.parseEither p
 
-foldArgs :: (Monad m, Monoid a) => [m a] -> m a
-foldArgs = foldM (\b f -> (b <>) <$> f) mempty
-
-evaluateArg :: ArgM a -> Context -> Either [String] a
-evaluateArg arg = runExcept . evalStateT arg
-
-runArg :: ArgM a -> IO (Either [String] a)
-runArg arg = do
-  t <- getCurrentTime
-  return $ evaluateArg arg (Context t)
-
-runArgs :: [ArgM Query] -> IO (Either [String] Query)
-runArgs = runArg . foldArgs
+runArgs :: [ArgQuery] -> IO (Either [String] Query)
+runArgs args = do
+  contextTime <- getCurrentTime
+  return $ evaluateQuery args Context{..}
 
 type Argument = String -> ArgQuery
 type Option = Opt.OptDescr ArgQuery
@@ -110,9 +96,9 @@ parseCase = do
   argMatch <- explicitParseFieldMaybe 
     (J.withText "regex" $ \m -> (,) m <$> RE.makeRegexOptsM compExtended RE.blankExecOpt (T.unpack m))
     "match"
-  argSplit  <- parseFieldMaybe "split"
-  argType   <- parseFieldMaybe "type"   .!= TypeString
-  argQuery <- state (\o -> (JM.intersection o queryKeys, JM.difference o queryKeys))
+  argSplit <- parseFieldMaybe "split"
+  argType  <- parseFieldMaybe "type"   .!= TypeString
+  argQuery <- parseRawQueryToken
   return ArgCase{..}
 
 instance J.FromJSON ArgCase where
@@ -121,7 +107,7 @@ instance J.FromJSON ArgCase where
 parseHandler :: ObjectParser ArgHandler
 parseHandler = do
   argLabel <- parseFieldMaybe "arg" .!= "ARG"
-  argCases <- parseField "switch" <|> return <$> parseCase
+  argCases <- parseField "switch" `objectPlus` return <$> parseCase
   return ArgHandler{..}
 
 matchMaybe :: Maybe (T.Text, Regex) -> String -> Maybe (A.Array Int String)
@@ -142,7 +128,7 @@ evaluateCase ArgCase{..} a
     TypeString -> return $ J.String s
     TypeDate   -> jsonDate <$> parseDateArg (T.unpack s)
     TypeNumber -> J.Number <$> maybe (fail $ "invalid numeric value: " ++ show s) return (readMaybe (T.unpack s))
-  build groups s0 = argParseJSON (parseObject parseQuery) 
+  build groups s0 = argParseJSON (parseObject parseQueryToken) 
     $ substitutePlaceholdersObject subst argQuery where
     subst "" = Just s0
     subst (TR.decimal -> Right (i, ""))
@@ -157,8 +143,8 @@ evaluateCases cases s = msum $ map (`evaluateCase` s) cases
 parseArgument :: Macros -> J.Value -> J.Parser (Argument, String, String)
 parseArgument macros = withObjectParser "argument" $ do
   expandMacros macros
-  h <- parseHandler
   help <- parseFieldMaybe "help" .!= ""
+  h <- parseHandler
   return (evaluateCases $ argCases h, argLabel h, help)
 
 parseOption :: Macros -> J.Value -> J.Parser Option
@@ -167,7 +153,7 @@ parseOption macros = withObjectParser "option" $ do
   flags <- parseFieldMaybe "flags" .!= V.empty
   let (short, long) = V.partitionWith shortlong flags
   help <- parseFieldMaybe "help" .!= ""
-  o <- parseNoArg <|> parseArg
+  o <- parseNoArg `objectPlus` parseArg
   return $ Opt.Option
     (V.toList short)
     (V.toList long)
@@ -179,7 +165,7 @@ parseOption macros = withObjectParser "option" $ do
   parseNoArg = do
     -- make sure there are no argument placeholders
     guard . not . any T.null =<< gets collectPlaceholdersObject
-    q <- parseQuery
+    q <- parseQueryToken
     guard =<< gets JM.null -- checkUnparsedFields
     return $ Opt.NoArg $ return q
   parseArg :: ObjectParser (Opt.ArgDescr ArgQuery)

@@ -130,15 +130,15 @@ main = do
   prog <- getProgName
   args' <- getArgs
 
-  let (opts, _, errs) = Opt.getOpt (Opt.ReturnInOrder confArgs) confOpts args'
+  let (opts, ~[], errs) = Opt.getOpt (Opt.ReturnInOrder confArgs) confOpts args'
   qore <- runArgs opts
-  Query{..} <- case (errs, qore) of
+  q@Query{..} <- case (errs, qore) of
     ([], Right q) -> return (q <> confDefault)
     (err, qerr) -> do
       mapM_ (hPutStrLn stderr) (either (++) (\_ -> id) qerr err)
-      hPutStrLn stderr $ Opt.usageInfo ("Usage: " ++ prog ++ " OPTION|" ++ confArgLabel ++ " ...\n"
+      hPutStrLn stderr $ Opt.usageInfo ("Usage: " ++ prog ++ " OPTION|" ++ confArgLabel ++ " ...") confOpts
+        ++ "  " ++ confArgLabel ++ replicate (14-length confArgLabel) ' ' ++ confArgHelp
         ++ confHelp
-        ++ "\n  " ++ confArgLabel ++ "    " ++ confArgHelp) confOpts
       exitFailure
 
   let fmt = formatMessage confFormat
@@ -146,9 +146,7 @@ main = do
         <> "sort" J..= nubBy ((==) `on` querySortKey) querySort
         <> "_source" J..= False
         <> "fields" `JE.pair` JE.list id (formatFields confFormat)
-        <> "query" `JE.pair` (JE.pairs
-          $  "bool" `JE.pair` (JE.pairs
-            $  "filter" J..= queryFilter))
+        <> "query" J..= q
   when confDebug $ BSLC.putStrLn $ BSB.toLazyByteString $ J.fromEncoding $ JE.pairs req
 
   let loop :: Maybe Word -> Maybe J.Array -> IO ()

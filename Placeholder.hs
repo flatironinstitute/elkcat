@@ -138,10 +138,14 @@ type Macro = J.Object
 type Macros = JM.KeyMap Macro
 
 expandMacrosObject :: Macros -> J.Object -> J.Object
-expandMacrosObject macros obj = JM.union base expanded where
+expandMacrosObject macros obj = unionObj base expanded where
   base = JM.difference obj macros
   expanded = fold $ JM.intersectionWith expand obj macros
   expand args macro = substitutePlaceholdersObject (jsonLookup args) macro
+  unionObj = JM.unionWith union
+  union (J.Array x) (J.Array y) = J.Array (x <> y)
+  -- union (J.Object x) (J.Object y) = J.Object $ unionObj x y
+  union x _ = x
 
 expandMacros :: Macros -> ObjectParser ()
 expandMacros = modify . expandMacrosObject

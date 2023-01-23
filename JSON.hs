@@ -9,6 +9,15 @@ import           Data.Maybe (fromMaybe)
 import qualified Data.Text as T
 import qualified Data.Text.Read as TR
 
+infixl 3 `jsonPlus`, `objectPlus`
+
+-- |A better version of '<|>' or 'mplus' that includes both errors if both fail.
+jsonPlus :: J.Parser a -> J.Parser a -> J.Parser a
+jsonPlus p q =
+  J.parserCatchError p $ \pj pe ->
+    J.parserCatchError q $ \qj qe ->
+      J.parserThrowError pj $ pe ++ "\n" ++ J.formatPath qj ++ ": " ++ qe
+
 parseReader :: TR.Reader a -> J.Value -> J.Parser a
 parseReader r = J.withText "reader" $ either fail return . (check <=< r) where
   check (x, t)
@@ -17,6 +26,11 @@ parseReader r = J.withText "reader" $ either fail return . (check <=< r) where
 
 -- |A 'J.Parser' that keeps track of the object being parsed
 type ObjectParser = StateT J.Object J.Parser
+
+-- |'jsonPlus' for 'ObjectParser'
+-- This is not doing any good because the errors more often come too late from 'checkUnparsedFields'
+objectPlus :: ObjectParser a -> ObjectParser a -> ObjectParser a
+objectPlus (StateT p) (StateT q) = StateT $ \s -> p s `jsonPlus` q s
 
 -- |Fail if there are any remaining fields.
 checkUnparsedFields :: String -> ObjectParser ()
