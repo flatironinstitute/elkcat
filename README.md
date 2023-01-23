@@ -1,9 +1,8 @@
 # elkcat
 
-elkcat is a highly configurable elasticsearch query tool designed for querying
-log messages.  It is similar to elktail, but does not (yet) have follow (tail
--f) functionality.  It also has a complex configuration that allows
-customization of which arguments can be used to query documents.
+elkcat is a highly configurable elasticsearch query tool designed for querying log messages.
+It is similar to elktail, but does not (yet) have follow (tail -f) functionality.
+It has a complex configuration that allows customization of which arguments can be used to query documents.
 
 See the [config](elkcat.yaml) file for documentation on the configuration.
 
@@ -53,7 +52,7 @@ possible avoid regular expressions as they can be slow.
 
 1. Install [Haskell stack](https://docs.haskellstack.org/en/stable/).
 1. Clone or download this repo.
+1. `cd gnulib-parse-datetime && autoreconf && ./configure && make && cd ..` (TODO: incorporate this into cabal build)
 1. `stack install`
 
-Running `elkcat` the first time will install the example config file to
-`~/.config/elkcat.yaml`.  You should then edit this file to taste.
+Running `elkcat` the first time will install the example config file to `~/.config/elkcat.yaml`.  You should then edit this file to taste.
