@@ -14,9 +14,10 @@ module Query
   ) where
 
 import           Control.Applicative ((<|>))
+import           Control.Arrow (second)
 import           Control.Monad (guard)
 import           Control.Monad.Except (Except, throwError, runExcept)
-import           Control.Monad.State (StateT(..), evalStateT, state)
+import           Control.Monad.State (StateT(..), evalStateT, state, gets, modify)
 import qualified Data.Aeson.KeyMap as JM
 import qualified Data.Aeson.Types as J
 import           Data.Default (Default(..))
@@ -152,25 +153,28 @@ instance {-# OVERLAPPING #-} MonadFail (Except [String]) where
 
 type QueryM c = StateT c (Except [String])
 type QueryEval c = QueryM c QueryToken
-
-data ParseState c = ParseState [QueryEval c] c
-
+type ParseState c = ([QueryEval c], c)
 type QueryParser c = QueryM (ParseState c)
 
 -- get and evaluate the next arg
 popToken :: QueryParser c (Maybe QueryToken)
 popToken = StateT pop where
-  pop s@(ParseState [] _) = return (Nothing, s)
-  pop (ParseState (e:r) c) = do
+  pop s@([], _) = return (Nothing, s)
+  pop (e:r, c) = do
     (q, c') <- runStateT e c
-    return (Just q, ParseState r c')
+    return (Just q, (r, c'))
 
 -- handle open groups, treat as single argument
 popGroup :: QueryParser c (Maybe QueryToken)
 popGroup = do
   mapM got =<< popToken
   where
-  got (TokenOp OpOpen) = TokenQuery <$> parseGroup False mempty
+  got (TokenOp OpOpen) = do
+    -- context state is local
+    c <- gets snd
+    q <- parseGroup False mempty
+    modify (second $ const c)
+    return $ TokenQuery q
   got t = return t
 
 -- ensure next arg exists
@@ -206,4 +210,4 @@ parseGroup top q0 =
 
 evaluateQuery :: [QueryEval c] -> c -> Either [String] Query
 evaluateQuery args = runExcept
-  . evalStateT (parseGroup True mempty) . ParseState args
+  . evalStateT (parseGroup True mempty) . (,) args
