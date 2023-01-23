@@ -15,7 +15,7 @@ copyright:      2023 Dylan Simon
 license:        Apache-2.0
 build-type:     Simple
 extra-source-files: README.md
-data-files:     elkcat.yaml datemsk
+data-files:     elkcat.yaml
 
 source-repository head
   type: git
