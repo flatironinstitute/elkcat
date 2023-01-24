@@ -37,6 +37,7 @@ import qualified System.IO.Unsafe as Unsafe (unsafeDupablePerformIO)
 
 import Paths_elkcat (getDataFileName)
 import Placeholder
+import Query
 import Args
 import Config
 
@@ -132,7 +133,7 @@ main = do
 
   let (opts, ~[], errs) = Opt.getOpt (Opt.ReturnInOrder confArgs) confOpts args'
   qore <- runArgs opts
-  q@Query{..} <- case (errs, qore) of
+  ParamQuery Param{..} q <- case (errs, qore) of
     ([], Right q) -> return (q <> confDefault)
     (err, qerr) -> do
       mapM_ (hPutStrLn stderr) (either (++) (\_ -> id) qerr err)
@@ -143,7 +144,7 @@ main = do
 
   let fmt = formatMessage confFormat
       req = "track_total_hits" J..= False
-        <> "sort" J..= nubBy ((==) `on` querySortKey) querySort
+        <> "sort" J..= nubBy ((==) `on` querySortKey) paramSort
         <> "_source" J..= False
         <> "fields" `JE.pair` JE.list id (formatFields confFormat)
         <> "query" J..= q
@@ -164,4 +165,4 @@ main = do
         unless (n < size) $
           loop (subtract n <$> count) $ Just $ docSort $ V.last responseHits
 
-  loop (mfilter (/= 0) queryCount) Nothing
+  loop (mfilter (/= 0) paramCount) Nothing

@@ -4,9 +4,10 @@
 {-# LANGUAGE TupleSections #-}
 
 module Query
-  ( Query(..)
+  ( Param(..)
+  , Query(..)
+  , ParamQuery(..)
   , queryKeys
-  , parseQueryToken
   , parseRawQueryToken
   , QueryM
   , QueryEval
@@ -15,9 +16,9 @@ module Query
 
 import           Control.Applicative ((<|>))
 import           Control.Arrow (second)
-import           Control.Monad (guard)
+import           Control.Monad (guard, msum)
 import           Control.Monad.Except (Except, throwError, runExcept)
-import           Control.Monad.State (StateT(..), evalStateT, state, gets, modify)
+import           Control.Monad.State (StateT(..), evalStateT, gets, modify)
 import qualified Data.Aeson.KeyMap as JM
 import qualified Data.Aeson.Types as J
 import           Data.Default (Default(..))
@@ -35,57 +36,64 @@ jsonTerms J.Null = []
 jsonTerms (J.Array v) = V.toList v
 jsonTerms j = [j]
 
-data Query = Query
-  { queryCount :: Maybe Word
-  , querySort :: Terms
-  , queryFilter :: Terms
-  , queryMustNot :: Terms
-  , queryShould :: Terms
-  }
+parseTermsField :: J.Key -> ObjectParser Terms
+parseTermsField k = foldMap jsonTerms <$> parseFieldMaybe k
 
-instance Semigroup Query where
-  -- this is essentially an AND, but is not used to combine ORs
-  Query c1 s1 f1 n1 o1 <> Query c2 s2 f2 n2 o2 = Query
+
+-- |top-level parameters for the overall search
+data Param = Param
+  { paramCount :: Maybe Word
+  , paramSort :: Terms
+  } deriving (Show)
+
+instance Semigroup Param where
+  Param c1 s1 <> Param c2 s2 = Param
     (c1 <|> c2)
     (s1 <> s2)
-    (f1 <> f2)
-    (n1 <> n2)
-    (o1 <> o2)
 
-instance Monoid Query where
-  mempty = Query Nothing mempty mempty mempty mempty
+instance Monoid Param where
+  mempty = Param Nothing mempty
 
-instance Default Query where
-  def = mempty{ querySort = [J.String "_doc"] }
+instance Default Param where
+  def = mempty{ paramSort = [J.String "_doc"] }
 
-parseQuery :: ObjectParser Query
-parseQuery = do
-  queryCount   <- explicitParseFieldMaybe (\j -> J.parseJSON j `jsonPlus` parseReader TR.decimal j) "count"
-  querySort    <- terms "sort"
-  queryFilter  <- terms "filter"
-  queryMustNot <- terms "must_not"
-  queryShould  <- terms "should"
-  return Query{..}
-  where
-  terms k = foldMap jsonTerms <$> parseFieldMaybe k
+instance FromObject Param where
+  parseObject = do
+    paramCount   <- explicitParseFieldMaybe (\j -> J.parseJSON j `jsonPlus` parseReader TR.decimal j) "count"
+    paramSort    <- parseTermsField "sort"
+    return Param{..}
 
-instance J.FromJSON Query where
-  parseJSON = withObjectParser "query" parseQuery
+paramKeys :: JM.KeyMap ()
+paramKeys = JM.fromList $ map (, ())
+  [ "count", "sort" ]
 
-parseRawQueryOp :: ObjectParser J.Object
-parseRawQueryOp = JM.singleton "op" <$> parseField "op"
+instance J.FromJSON Param where
+  parseJSON = parseJSONObject "query params"
+
+
+-- |A query in ES bool form, representing a conjuction of the three sets of terms
+data Query = Query
+  { queryFilter :: Terms -- ^ ANDed terms (ALL)
+  , queryMustNot :: Terms -- ^ NORed terms (NONE)
+  , queryShould :: Terms -- ^ ORed terms (ANY) except that [] is TRUE
+  }
+
+instance FromObject Query where
+  parseObject = do
+    queryFilter  <- parseTermsField "filter"
+    queryMustNot <- parseTermsField "must_not"
+    queryShould  <- parseTermsField "should"
+    return Query{..}
 
 queryKeys :: JM.KeyMap ()
 queryKeys = JM.fromList $ map (, ())
-  [ "count", "sort", "filter", "must_not", "should" ]
+  [ "filter", "must_not", "should" ]
 
-parseRawQuery :: ObjectParser J.Object
-parseRawQuery = state (\o -> (JM.intersection o queryKeys, JM.difference o queryKeys))
-
-parseRawQueryToken :: ObjectParser J.Object
-parseRawQueryToken = parseRawQueryOp <|> parseRawQuery
+instance J.FromJSON Query where
+  parseJSON = parseJSONObject "query"
 
 instance J.ToJSON Query where
+  -- |render as an ES query term
   toJSON Query{ queryFilter = [t], queryMustNot = [], queryShould = [] } = t -- simplication
   toJSON Query{..} = J.object
     [ "bool" J..= J.object (catMaybes
@@ -100,25 +108,43 @@ instance J.ToJSON Query where
     term k [t] = Just $ k J..= t
     term k t = Just $ k J..= t
 
--- query as OR terms
+instance Semigroup Query where
+  -- |AND two queries
+  Query f1 n1 o1 <> Query f2 n2 o2 = Query
+    (f1 <> f2 <> ands)
+    (n1 <> n2)
+    ors
+    where
+    -- (A OR B) AND (X OR Y) needs additional nesting
+    (ands, ors)
+      | null o1 || null o2 = ([], o1 <> o2)
+      | otherwise = (map (J.toJSON . Query [] []) [o1, o2], [])
+
+instance Monoid Query where
+  mempty = Query mempty mempty mempty
+
+-- query as OR (should) terms
 queryShoulds :: Query -> Terms
 queryShoulds Query{ queryFilter = [], queryMustNot = [], queryShould = s } = s
 queryShoulds q = [J.toJSON q]
 
+-- NOT(OR(should)) becomes NOR(should); NOT(AND(filter)) becomes nested
 negateQuery :: Query -> Query
-negateQuery q = q
+negateQuery q = Query
   { queryFilter = []
   , queryMustNot = queryShoulds q
   , queryShould = []
   }
 
 orQuery :: Query -> Query -> Query
-orQuery q1 q2 = (q1 <> q2)
+orQuery q1 q2 = Query
   { queryFilter = []
   , queryMustNot = []
   , queryShould = queryShoulds q1 ++ queryShoulds q2
   }
 
+
+-- |combining operators passed as arguments to build an expression
 data QueryOp
   = OpOpen
   | OpClose
@@ -137,16 +163,52 @@ instance J.FromJSON QueryOp where
     po "or"    = return OpOr
     po o = fail $ "unknown query op: " ++ show o
 
-data QueryToken
-  = TokenQuery !Query
-  | TokenOp !QueryOp
+instance FromObject QueryOp where
+  parseObject = parseField "op"
 
-parseQueryToken :: ObjectParser QueryToken
-parseQueryToken =
-  TokenOp <$> parseField "op" `objectPlus` TokenQuery <$> parseQuery
+opKeys :: JM.KeyMap ()
+opKeys = JM.singleton "op" ()
+
+
+data QueryToken
+  = TokenParam Param
+  | TokenQuery Query
+  | TokenOp QueryOp
+
+instance FromObject QueryToken where
+  parseObject =
+                 TokenOp    <$> parseObject
+    `objectPlus` TokenParam <$> nonEmptyParser parseObject
+    `objectPlus` TokenQuery <$> parseObject
 
 instance J.FromJSON QueryToken where
-  parseJSON = withObjectParser "query token" parseQueryToken
+  parseJSON = parseJSONObject "query argument"
+
+parseRawQueryToken :: ObjectParser J.Object
+parseRawQueryToken = msum $ map takeSome [opKeys, paramKeys, queryKeys] where
+  takeSome q = do
+    o <- takeObjectKeys q
+    guard $ not $ JM.null o
+    return o
+
+
+data ParamQuery = ParamQuery !Param !Query
+
+instance Semigroup ParamQuery where
+  ParamQuery p1 q1 <> ParamQuery p2 q2 =
+    ParamQuery (p1 <> p2) (q1 <> q2)
+
+instance Monoid ParamQuery where
+  mempty = ParamQuery mempty mempty
+
+instance Default ParamQuery where
+  def = ParamQuery def mempty
+
+instance FromObject ParamQuery where
+  parseObject = ParamQuery <$> parseObject <*> parseObject
+
+instance J.FromJSON ParamQuery where
+  parseJSON = parseJSONObject "query params"
 
 instance {-# OVERLAPPING #-} MonadFail (Except [String]) where
   fail = throwError . return
@@ -172,9 +234,14 @@ popGroup = do
   got (TokenOp OpOpen) = do
     -- context state is local
     c <- gets snd
-    q <- parseGroup False mempty
+    q <- parseGroup mempty
     modify (second $ const c)
     return $ TokenQuery q
+  got (TokenOp OpNot) = do
+    t <- popGroup' "NOT argument"
+    case t of
+      TokenQuery q -> return $ TokenQuery $ negateQuery q
+      _ -> fail "NOT needs a query argument"
   got t = return t
 
 -- ensure next arg exists
@@ -182,32 +249,33 @@ popGroup' :: String -> QueryParser c QueryToken
 popGroup' err = do
   q <- maybe (fail $ "Missing " ++ err) return =<< popGroup
   case q of
-    TokenQuery (Query{ queryCount = Just _ }) -> fail "Count specifications can only be at top-level"
-    TokenQuery (Query{ querySort = _:_ }) -> fail "Sort specifications can only be at top-level"
+    TokenParam p -> fail $ "Count and sort specifications can only be at top-level: " ++ show p
     _ -> return q
 
 -- handle the rest of a group
-parseGroup :: Bool -> Query -> QueryParser c Query
-parseGroup top q0 =
-  if top
-    then maybe (return q0) got =<< popGroup
-    else got =<< popGroup' "close group"
-  where
-  got (TokenOp OpOpen) = fail "Unexpected open group" -- handled in popGroup
-  got (TokenOp OpClose)
-    | top = fail "Unmatched close group"
-    | otherwise = return q0
-  got (TokenOp OpNot) = do
-    t <- popGroup' "NOT argument"
-    case t of
-      TokenQuery q -> next $ negateQuery q
-      TokenOp _ -> fail "NOT needs a query argument"
-  got (TokenOp OpOr) = do
-    q <- parseGroup top mempty
-    return $ orQuery q0 q
-  got (TokenQuery q) = next q
-  next = parseGroup top . (q0 <>)
+parseGroup :: Query -> QueryParser c Query
+parseGroup q0 = do
+  t <- popGroup' "close group"
+  case t of
+    TokenOp OpClose -> return q0
+    TokenOp OpOr -> do
+      q <- parseGroup mempty
+      return $ orQuery q0 q
+    TokenQuery q -> parseGroup (q0 <> q)
 
-evaluateQuery :: [QueryEval c] -> c -> Either [String] Query
+-- handle the rest of a group
+parseTopGroup :: ParamQuery -> QueryParser c ParamQuery
+parseTopGroup pq0@(ParamQuery p0 q0) = do
+  t <- popGroup
+  case t of
+    Nothing -> return pq0
+    Just (TokenOp OpClose) -> fail "Unmatched close group"
+    Just (TokenOp OpOr) -> do
+      ParamQuery p q <- parseTopGroup (ParamQuery p0 mempty)
+      return $ ParamQuery p (orQuery q0 q)
+    Just (TokenParam p) -> parseTopGroup (ParamQuery (p0 <> p) q0)
+    Just (TokenQuery q) -> parseTopGroup (ParamQuery p0 (q0 <> q))
+
+evaluateQuery :: [QueryEval c] -> c -> Either [String] ParamQuery
 evaluateQuery args = runExcept
-  . evalStateT (parseGroup True mempty) . (,) args
+  . evalStateT (parseTopGroup mempty) . (,) args

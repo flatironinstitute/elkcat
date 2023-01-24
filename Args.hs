@@ -5,8 +5,7 @@
 {-# LANGUAGE ViewPatterns #-}
 
 module Args
-  ( Query(..)
-  , Option
+  ( Option
   , Argument
   , parseArgument
   , parseOption
@@ -43,7 +42,7 @@ type ArgQuery = QueryEval Context
 argParseJSON :: (a -> J.Parser b) -> a -> ArgM b
 argParseJSON p = either fail return . J.parseEither p
 
-runArgs :: [ArgQuery] -> IO (Either [String] Query)
+runArgs :: [ArgQuery] -> IO (Either [String] ParamQuery)
 runArgs args = do
   contextTime <- getCurrentTime
   return $ evaluateQuery args Context{..}
@@ -91,24 +90,24 @@ data ArgHandler = ArgHandler
   , argLabel :: String
   }
 
-parseCase :: ObjectParser ArgCase
-parseCase = do
-  argMatch <- explicitParseFieldMaybe 
-    (J.withText "regex" $ \m -> (,) m <$> RE.makeRegexOptsM compExtended RE.blankExecOpt (T.unpack m))
-    "match"
-  argSplit <- parseFieldMaybe "split"
-  argType  <- parseFieldMaybe "type"   .!= TypeString
-  argQuery <- parseRawQueryToken
-  return ArgCase{..}
+instance FromObject ArgCase where
+  parseObject = do
+    argMatch <- explicitParseFieldMaybe 
+      (J.withText "regex" $ \m -> (,) m <$> RE.makeRegexOptsM compExtended RE.blankExecOpt (T.unpack m))
+      "match"
+    argSplit <- parseFieldMaybe "split"
+    argType  <- parseFieldMaybe "type"   .!= TypeString
+    argQuery <- parseRawQueryToken
+    return ArgCase{..}
 
 instance J.FromJSON ArgCase where
-  parseJSON = withObjectParser "argument case" parseCase
+  parseJSON = parseJSONObject "argument case"
 
-parseHandler :: ObjectParser ArgHandler
-parseHandler = do
-  argLabel <- parseFieldMaybe "arg" .!= "ARG"
-  argCases <- parseField "switch" `objectPlus` return <$> parseCase
-  return ArgHandler{..}
+instance FromObject ArgHandler where
+  parseObject = do
+    argLabel <- parseFieldMaybe "arg" .!= "ARG"
+    argCases <- parseField "switch" `objectPlus` return <$> parseObject
+    return ArgHandler{..}
 
 matchMaybe :: Maybe (T.Text, Regex) -> String -> Maybe (A.Array Int String)
 matchMaybe Nothing s = Just (A.listArray (0,0) [s])
@@ -128,7 +127,7 @@ evaluateCase ArgCase{..} a
     TypeString -> return $ J.String s
     TypeDate   -> jsonDate <$> parseDateArg (T.unpack s)
     TypeNumber -> J.Number <$> maybe (fail $ "invalid numeric value: " ++ show s) return (readMaybe (T.unpack s))
-  build groups s0 = argParseJSON (parseObject parseQueryToken) 
+  build groups s0 = argParseJSON (runObjectParser parseObject) 
     $ substitutePlaceholdersObject subst argQuery where
     subst "" = Just s0
     subst (TR.decimal -> Right (i, ""))
@@ -144,7 +143,7 @@ parseArgument :: Macros -> J.Value -> J.Parser (Argument, String, String)
 parseArgument macros = withObjectParser "argument" $ do
   expandMacros macros
   help <- parseFieldMaybe "help" .!= ""
-  h <- parseHandler
+  h <- parseObject
   return (evaluateCases $ argCases h, argLabel h, help)
 
 parseOption :: Macros -> J.Value -> J.Parser Option
@@ -165,10 +164,10 @@ parseOption macros = withObjectParser "option" $ do
   parseNoArg = do
     -- make sure there are no argument placeholders
     guard . not . any T.null =<< gets collectPlaceholdersObject
-    q <- parseQueryToken
+    q <- parseObject
     guard =<< gets JM.null -- checkUnparsedFields
     return $ Opt.NoArg $ return q
   parseArg :: ObjectParser (Opt.ArgDescr ArgQuery)
   parseArg = do
-    h <- parseHandler
+    h <- parseObject
     return $ Opt.ReqArg (evaluateCases $ argCases h) (argLabel h)

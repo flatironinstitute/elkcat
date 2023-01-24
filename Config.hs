@@ -23,6 +23,7 @@ import           Network.HTTP.Types.Header (hContentType)
 
 import Placeholder
 import JSON
+import Query
 import Args
 
 data Formatter
@@ -57,7 +58,7 @@ data Config = Config
   , confIndex :: String
   , confSize :: Word
   , confFormat :: Format
-  , confDefault :: Query
+  , confDefault :: ParamQuery
   , confOpts :: [Option]
   , confArgs :: Argument
   , confArgLabel :: String

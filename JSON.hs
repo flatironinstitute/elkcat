@@ -1,7 +1,7 @@
 module JSON where
 
-import           Control.Monad ((<=<), unless)
-import           Control.Monad.State (StateT(..), evalStateT, get)
+import           Control.Monad ((<=<), unless, guard)
+import           Control.Monad.State (StateT(..), evalStateT, get, state)
 import qualified Data.Aeson.Key as JK
 import qualified Data.Aeson.KeyMap as JM
 import qualified Data.Aeson.Types as J
@@ -38,12 +38,12 @@ checkUnparsedFields n = do
   o <- get
   unless (JM.null o) $ fail $ "Unexpected fields in " ++ n ++ ": " ++ show (JM.keys o)
 
-parseObject :: ObjectParser a -> J.Object -> J.Parser a
-parseObject = evalStateT
+runObjectParser :: ObjectParser a -> J.Object -> J.Parser a
+runObjectParser = evalStateT
 
 -- |Apply 'J.withObject' to an 'ObjectParser', ignoring unsparsed fields.
 withObjectParser_ :: String -> ObjectParser a -> J.Value -> J.Parser a
-withObjectParser_ n = J.withObject n . parseObject
+withObjectParser_ n = J.withObject n . runObjectParser
 
 -- |Apply 'J.withObject' to an 'ObjectParser', failing if there are any remaining fields at the end.
 withObjectParser :: String -> ObjectParser a -> J.Value -> J.Parser a
@@ -51,6 +51,13 @@ withObjectParser n p = withObjectParser_ n $ do
   r <- p
   checkUnparsedFields n
   return r
+
+nonEmptyParser :: ObjectParser a -> ObjectParser a
+nonEmptyParser p = do
+  o <- get
+  r <- p
+  o' <- get
+  r <$ guard (o /= o')
 
 -- |Apply a field parser (like 'J..:' or 'J..:?') to a field of the current object, and remove that field.
 parseFieldWith :: (J.Object -> J.Key -> J.Parser a) -> J.Key -> ObjectParser a
@@ -89,3 +96,17 @@ pmval .!= val = fromMaybe val <$> pmval
 -- |Use 'withObjectParser' as an 'explicitParseField'.
 parseSubObject :: J.Key -> ObjectParser a -> ObjectParser a
 parseSubObject k p = explicitParseField (withObjectParser (JK.toString k) p) k
+
+-- |@partitionObject a b@ splits object b into (keys in a, keys not in a)
+partitionObject :: JM.KeyMap a -> JM.KeyMap b -> (JM.KeyMap b, JM.KeyMap b)
+partitionObject p o = (JM.intersection o p, JM.difference o p)
+
+-- |Extract a new object with only the given keys, leaving the rest
+takeObjectKeys :: JM.KeyMap a -> ObjectParser J.Object
+takeObjectKeys = state . partitionObject
+
+class FromObject a where
+  parseObject :: ObjectParser a
+
+parseJSONObject :: FromObject a => String -> J.Value -> J.Parser a
+parseJSONObject n = withObjectParser n parseObject
