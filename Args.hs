@@ -19,7 +19,7 @@ import qualified Data.Aeson.Types as J
 import qualified Data.Array as A
 import qualified Data.Text as T
 import qualified Data.Text.Read as TR
-import           Data.Time.Clock (UTCTime, getCurrentTime)
+import           Data.Time.Clock (UTCTime, getCurrentTime, nominalDiffTimeToSeconds)
 import           Data.Time.Clock.POSIX (utcTimeToPOSIXSeconds)
 import qualified Data.Vector as V
 import           Text.Read (readMaybe)
@@ -76,7 +76,7 @@ parseDateArg s = do
     $ parseDatetime' t0 s
 
 jsonDate :: UTCTime -> J.Value
-jsonDate = J.Number . (1e3 *) . realToFrac . utcTimeToPOSIXSeconds
+jsonDate = (J.toJSON :: Integer -> J.Value) . truncate . (1e3 *) . nominalDiffTimeToSeconds . utcTimeToPOSIXSeconds
 
 data ArgCase = ArgCase
   { argMatch :: Maybe (T.Text, Regex)
