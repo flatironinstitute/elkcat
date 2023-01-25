@@ -242,4 +242,4 @@ help: |
   possible avoid regular expressions as they can be slow.
 
 # print raw json requests (and documents?)
-debug: True
+#debug: True
