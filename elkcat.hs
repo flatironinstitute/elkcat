@@ -10,7 +10,6 @@ import qualified Data.Aeson.Key as JK
 import qualified Data.Aeson.KeyMap as JM
 import qualified Data.Aeson.Text as JT
 import qualified Data.ByteString as BS
-import qualified Data.ByteString.Builder as BSB
 import qualified Data.ByteString.Char8 as BSC
 import qualified Data.ByteString.Lazy.Char8 as BSLC
 import           Data.Function (on)
@@ -27,6 +26,7 @@ import qualified Data.Vector as V
 import qualified Data.Yaml as Y
 import qualified Network.HTTP.Client.Conduit as HTTP
 import qualified Network.HTTP.Simple as HTTP
+import           Network.HTTP.Types (statusCode, statusMessage)
 import qualified Network.URI as URI
 import qualified System.Console.GetOpt as Opt
 import           System.Directory (getXdgDirectory, XdgDirectory(XdgConfig), doesFileExist, copyFile, setPermissions, setOwnerReadable, setOwnerWritable, emptyPermissions)
@@ -40,14 +40,6 @@ import Placeholder
 import Query
 import Args
 import Config
-
-searchRequest :: Config -> J.Encoding -> HTTP.Request
-searchRequest Config{..} body =
-  confRequest
-    { HTTP.path = HTTP.path confRequest <> BS.intercalate "/" (map (BSC.pack . URI.escapeURIString URI.isUnescapedInURIComponent)
-      [confIndex, "_search"])
-    , HTTP.requestBody = HTTP.RequestBodyLBS $ JE.encodingToLazyByteString body
-    }
 
 data Doc = Doc
   { docId :: T.Text
@@ -79,7 +71,7 @@ data Response = Response
 
 instance J.FromJSON Response where
   parseJSON = J.withObject "response" $ \r -> Response
-    <$> (r J..: "hits" >>= (J..: "hits"))
+    <$> (r J..:? "hits" J..!= mempty >>= (J..!= mempty) . (J..:? "hits"))
     <*> return r
 
 formatFields :: Format -> [JE.Encoding]
@@ -128,7 +120,7 @@ main = do
     src <- getDataFileName "elkcat.yaml"
     copyFile src conffile
     setPermissions conffile (setOwnerReadable True $ setOwnerWritable True emptyPermissions)
-  config@Config{..} <- Y.decodeFileThrow conffile
+  Config{..} <- Y.decodeFileThrow conffile
 
   prog <- getProgName
   args' <- getArgs
@@ -144,27 +136,41 @@ main = do
         ++ confHelp
       exitFailure
 
-  let fmt = formatMessage confFormat
-      req = "track_total_hits" J..= False
+  let req = confRequest
+        { HTTP.path = HTTP.path confRequest <> BS.intercalate "/" (map (BSC.pack . URI.escapeURIString URI.isUnescapedInURIComponent)
+          [confIndex, "_search"])
+        }
+      fmt = formatMessage confFormat
+      body = "track_total_hits" J..= False
         <> "sort" J..= nubBy ((==) `on` querySortKey) paramSort
         <> "_source" J..= False
         <> "fields" `JE.pair` JE.list id (formatFields confFormat)
         <> "query" J..= q
-  when confDebug $ BSLC.putStrLn $ BSB.toLazyByteString $ J.fromEncoding $ JE.pairs req
+  when confDebug $ BSLC.hPutStrLn stderr $ JE.encodingToLazyByteString $ JE.pairs body
 
   let loop :: Maybe Word -> Maybe J.Array -> IO ()
       loop (Just 0) _ = return ()
       loop count sa = do
         let size = maybe id min count confSize
-        r <- HTTP.httpJSON $ searchRequest config (JE.pairs $ req
-          <> "size" J..= size
-          <> foldMap ("search_after" J..=) sa)
-        mapM_ (BSC.hPutStrLn stderr) $ HTTP.getResponseHeader "warning" r
-        let Response{..} = HTTP.getResponseBody r
-            n = fromIntegral $ V.length responseHits
-        when confDebug $ BSLC.putStrLn $ J.encode $ responseRaw
-        V.mapM_ (TIO.putStrLn . fmt) responseHits
-        unless (n < size) $
-          loop (subtract n <$> count) $ Just $ docSort $ V.last responseHits
+            body' = JE.encodingToLazyByteString $
+              JE.pairs $ body
+                <> "size" J..= size
+                <> foldMap ("search_after" J..=) sa
+            req' = req{ HTTP.requestBody = HTTP.RequestBodyLBS body' }
+        res <- HTTP.httpJSON req'
+        mapM_ (BSC.hPutStrLn stderr) $ HTTP.getResponseHeader "warning" res
+        let s = HTTP.responseStatus res
+            Response{..} = HTTP.responseBody res
+        when confDebug $ BSLC.hPutStrLn stderr $ J.encode responseRaw
+        if statusCode s < 200 || statusCode s >= 300
+          then do
+            BSC.hPutStrLn stderr  $ "Error: " <> BSC.pack (show (statusCode s)) <> " " <> statusMessage s
+            BSLC.hPutStrLn stderr $ "Request: " <> body'
+            BSLC.hPutStrLn stderr $ "Response: " <> J.encode responseRaw
+          else do
+            let n = fromIntegral $ V.length responseHits
+            V.mapM_ (TIO.putStrLn . fmt) responseHits
+            unless (n < size) $
+              loop (subtract n <$> count) $ Just $ docSort $ V.last responseHits
 
   loop (mfilter (/= 0) paramCount) Nothing

@@ -82,7 +82,7 @@ instance J.FromJSON Config where
   parseJSON = withObjectParser "elkcat config" $ do
     confRequest <- parseSubObject "elasticsearch" $ do
       req <- explicitParseField (J.withText "url" $ 
-        either (fail . show) return . HTTP.parseRequestThrow . T.unpack) "url"
+        either (fail . show) return . HTTP.parseRequest . T.unpack) "url"
       basic <- parseFieldMaybe "basic-auth"
       proxy <- parseFieldMaybe "proxy-auth"
       bearer <- parseFieldMaybe "bearer-auth"
