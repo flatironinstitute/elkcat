@@ -154,6 +154,9 @@ opts:
   count: {}
   arg: COUNT
   help: Select at most COUNT messages.
+- flags: ['c',count]
+  count: true
+  help: Print only a count of messages.
 - flags: [r,reverse]
   sort:
     - "@timestamp": desc
@@ -241,5 +244,5 @@ help: |
   (starting with "+-"), or a regular expression (as "/REGEX/[i]").  When
   possible avoid regular expressions as they can be slow.
 
-# print raw json requests (and documents?)
+# print raw json requests and responses
 #debug: True

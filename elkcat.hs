@@ -3,7 +3,7 @@
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ViewPatterns #-}
 
-import           Control.Monad (when, unless, mfilter)
+import           Control.Monad (when, unless)
 import qualified Data.Aeson as J
 import qualified Data.Aeson.Encoding as JE
 import qualified Data.Aeson.Key as JK
@@ -26,7 +26,7 @@ import qualified Data.Vector as V
 import qualified Data.Yaml as Y
 import qualified Network.HTTP.Client.Conduit as HTTP
 import qualified Network.HTTP.Simple as HTTP
-import           Network.HTTP.Types (statusCode, statusMessage)
+import           Network.HTTP.Types (statusCode, statusMessage, statusIsSuccessful)
 import qualified Network.URI as URI
 import qualified System.Console.GetOpt as Opt
 import           System.Directory (getXdgDirectory, XdgDirectory(XdgConfig), doesFileExist, copyFile, setPermissions, setOwnerReadable, setOwnerWritable, emptyPermissions)
@@ -45,7 +45,7 @@ data Doc = Doc
   { docId :: T.Text
   , docFields :: J.Object
   , docSort :: J.Array
-  }
+  } deriving (Show)
 
 instance J.FromJSON Doc where
   parseJSON = J.withObject "document" $ \d -> Doc
@@ -64,15 +64,21 @@ instance J.ToJSON Doc where
     <> "fields" J..= docFields
     <> "sort" J..= docSort
 
-data Response = Response
+data QueryResponse = QueryResponse
   { responseHits :: V.Vector Doc
-  , responseRaw :: J.Object
-  }
+  } deriving (Show)
 
-instance J.FromJSON Response where
-  parseJSON = J.withObject "response" $ \r -> Response
-    <$> (r J..:? "hits" J..!= mempty >>= (J..!= mempty) . (J..:? "hits"))
-    <*> return r
+instance J.FromJSON QueryResponse where
+  parseJSON = J.withObject "query response" $ \r -> QueryResponse
+    <$> (r J..: "hits" >>= (J..: "hits"))
+
+data CountResponse = CountResponse
+  { responseCount :: Integer
+  } deriving (Show)
+
+instance J.FromJSON CountResponse where
+  parseJSON = J.withObject "count response" $ \r -> CountResponse
+    <$> (r J..: "count")
 
 formatFields :: Format -> [JE.Encoding]
 formatFields = map pf . collectPlaceholders where
@@ -136,41 +142,53 @@ main = do
         ++ confHelp
       exitFailure
 
-  let req = confRequest
-        { HTTP.path = HTTP.path confRequest <> BS.intercalate "/" (map (BSC.pack . URI.escapeURIString URI.isUnescapedInURIComponent)
-          [confIndex, "_search"])
-        }
-      fmt = formatMessage confFormat
-      body = "track_total_hits" J..= False
-        <> "sort" J..= nubBy ((==) `on` querySortKey) paramSort
-        <> "_source" J..= False
-        <> "fields" `JE.pair` JE.list id (formatFields confFormat)
-        <> "query" J..= q
-  when confDebug $ BSLC.hPutStrLn stderr $ JE.encodingToLazyByteString $ JE.pairs body
-
-  let loop :: Maybe Word -> Maybe J.Array -> IO ()
-      loop (Just 0) _ = return ()
-      loop count sa = do
-        let size = maybe id min count confSize
-            body' = JE.encodingToLazyByteString $
-              JE.pairs $ body
-                <> "size" J..= size
-                <> foldMap ("search_after" J..=) sa
-            req' = req{ HTTP.requestBody = HTTP.RequestBodyLBS body' }
-        res <- HTTP.httpJSON req'
+  let es api args = do
+        let body = JE.encodingToLazyByteString $ JE.pairs args
+        when confDebug $ BSLC.hPutStrLn stderr body
+        res <- HTTP.httpJSON $ confRequest
+          { HTTP.path = HTTP.path confRequest <> BS.intercalate "/" (map (BSC.pack . URI.escapeURIString URI.isUnescapedInURIComponent)
+            [confIndex, api])
+          , HTTP.requestBody = HTTP.RequestBodyLBS body
+          }
         mapM_ (BSC.hPutStrLn stderr) $ HTTP.getResponseHeader "warning" res
         let s = HTTP.responseStatus res
-            Response{..} = HTTP.responseBody res
-        when confDebug $ BSLC.hPutStrLn stderr $ J.encode responseRaw
-        if statusCode s < 200 || statusCode s >= 300
-          then do
-            BSC.hPutStrLn stderr  $ "Error: " <> BSC.pack (show (statusCode s)) <> " " <> statusMessage s
-            BSLC.hPutStrLn stderr $ "Request: " <> body'
-            BSLC.hPutStrLn stderr $ "Response: " <> J.encode responseRaw
-          else do
-            let n = fromIntegral $ V.length responseHits
-            V.mapM_ (TIO.putStrLn . fmt) responseHits
-            unless (n < size) $
-              loop (subtract n <$> count) $ Just $ docSort $ V.last responseHits
+            ok = statusIsSuccessful s
+            j = HTTP.responseBody res
+            p = J.fromJSON j
+        case p of
+          J.Success r | statusIsSuccessful s -> do
+            when confDebug $ BSLC.hPutStrLn stderr $ J.encode j
+            return r
+          _ -> do
+            if ok
+              then hPutStrLn stderr $ "Parse error: " <> show p
+              else BSC.hPutStrLn stderr  $ "Error: " <> BSC.pack (show (statusCode s)) <> " " <> statusMessage s
+            BSLC.hPutStrLn stderr $ "Request: " <> body
+            BSLC.hPutStrLn stderr $ "Response: " <> J.encode j
+            exitFailure
 
-  loop (mfilter (/= 0) paramCount) Nothing
+      fmt = formatMessage confFormat
+
+      stream (Just 0) _ = return ()
+      stream count sa = do
+        QueryResponse{..} <- es "_search" $
+             "track_total_hits" J..= False
+          <> "sort" J..= nubBy ((==) `on` querySortKey) paramSort
+          <> "_source" J..= False
+          <> "fields" `JE.pair` JE.list id (formatFields confFormat)
+          <> "query" J..= q
+          <> "size" J..= size
+          <> foldMap ("search_after" J..=) sa
+        let n = fromIntegral $ V.length responseHits
+        V.mapM_ (TIO.putStrLn . fmt) responseHits
+        unless (n < size) $
+          stream (subtract n <$> count) $ Just $ docSort $ V.last responseHits
+        where
+        size = maybe id min count confSize
+
+  case paramCount of
+    CountOnly -> do
+      CountResponse{..} <- es "_count" $ "query" J..= q
+      print $ responseCount
+    CountUnlimited -> stream Nothing Nothing
+    CountLimit n   -> stream (Just n) Nothing

@@ -2,9 +2,11 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE TupleSections #-}
+{-# LANGUAGE ViewPatterns #-}
 
 module Query
-  ( Param(..)
+  ( Count(..)
+  , Param(..)
   , Query(..)
   , ParamQuery(..)
   , queryKeys
@@ -14,7 +16,6 @@ module Query
   , evaluateQuery
   ) where
 
-import           Control.Applicative ((<|>))
 import           Control.Arrow (second)
 import           Control.Monad (guard, msum)
 import           Control.Monad.Except (Except, throwError, runExcept)
@@ -40,26 +41,49 @@ parseTermsField :: J.Key -> ObjectParser Terms
 parseTermsField k = foldMap jsonTerms <$> parseFieldMaybe k
 
 
+data Count
+  = CountUnlimited
+  | CountLimit Word
+  | CountOnly
+
+countLimit :: Word -> Count
+countLimit 0 = CountUnlimited
+countLimit n = CountLimit n
+
+instance Semigroup Count where
+  CountUnlimited <> x = x
+  x <> _ = x
+
+instance Monoid Count where
+  mempty = CountUnlimited
+
+instance J.FromJSON Count where
+  parseJSON J.Null = return mempty
+  parseJSON (J.Bool False) = return CountUnlimited
+  parseJSON (J.Bool True) = return CountOnly
+  parseJSON (J.String (TR.decimal -> Right (n, ""))) = return $ countLimit n
+  parseJSON j = countLimit <$> J.parseJSON j
+
 -- |top-level parameters for the overall search
 data Param = Param
-  { paramCount :: Maybe Word
+  { paramCount :: Count
   , paramSort :: Terms
-  } deriving (Show)
+  }
 
 instance Semigroup Param where
   Param c1 s1 <> Param c2 s2 = Param
-    (c1 <|> c2)
+    (c1 <> c2)
     (s1 <> s2)
 
 instance Monoid Param where
-  mempty = Param Nothing mempty
+  mempty = Param mempty mempty
 
 instance Default Param where
   def = mempty{ paramSort = [J.String "_doc"] }
 
 instance FromObject Param where
   parseObject = do
-    paramCount   <- explicitParseFieldMaybe (\j -> J.parseJSON j `jsonPlus` parseReader TR.decimal j) "count"
+    paramCount   <- parseFieldMaybe "count" .!= mempty
     paramSort    <- parseTermsField "sort"
     return Param{..}
 
@@ -249,7 +273,7 @@ popGroup' :: String -> QueryParser c QueryToken
 popGroup' err = do
   q <- maybe (fail $ "Missing " ++ err) return =<< popGroup
   case q of
-    TokenParam p -> fail $ "Count and sort specifications can only be at top-level: " ++ show p
+    TokenParam _ -> fail $ "Count and sort specifications can only be at top-level"
     _ -> return q
 
 -- handle the rest of a group
