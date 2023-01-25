@@ -18,7 +18,6 @@ import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import qualified Data.Text.Read as TR
 import qualified Network.HTTP.Client.Conduit as HTTP
-import qualified Network.HTTP.Simple as HTTP
 import           Network.HTTP.Types.Header (hContentType)
 
 import Placeholder
