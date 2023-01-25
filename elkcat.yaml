@@ -181,7 +181,7 @@ opts:
   filter:
     terms:
       syslog_severity: {}
-    split: ','
+  split: ','
   arg: VALUE
   help: |
     Select messages with severity VALUE,
@@ -190,7 +190,7 @@ opts:
   filter:
     terms:
       syslog_facility: {}
-    split: ','
+  split: ','
   arg: VALUE
   help: |
     Select messages with facility VALUE,

@@ -74,11 +74,13 @@ instance J.ToJSON Doc where
 
 data Response = Response
   { responseHits :: V.Vector Doc
+  , responseRaw :: J.Object
   }
 
 instance J.FromJSON Response where
   parseJSON = J.withObject "response" $ \r -> Response
     <$> (r J..: "hits" >>= (J..: "hits"))
+    <*> return r
 
 formatFields :: Format -> [JE.Encoding]
 formatFields = map pf . collectPlaceholders where
@@ -160,7 +162,7 @@ main = do
         mapM_ (BSC.hPutStrLn stderr) $ HTTP.getResponseHeader "warning" r
         let Response{..} = HTTP.getResponseBody r
             n = fromIntegral $ V.length responseHits
-        when confDebug $ V.mapM_ (BSLC.putStrLn . J.encode) responseHits
+        when confDebug $ BSLC.putStrLn $ J.encode $ responseRaw
         V.mapM_ (TIO.putStrLn . fmt) responseHits
         unless (n < size) $
           loop (subtract n <$> count) $ Just $ docSort $ V.last responseHits
