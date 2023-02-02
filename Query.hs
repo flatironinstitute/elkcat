@@ -16,6 +16,7 @@ module Query
   , evaluateQuery
   ) where
 
+import           Control.Applicative ((<|>))
 import           Control.Arrow (second)
 import           Control.Monad (guard, msum)
 import           Control.Monad.Except (Except, throwError, runExcept)
@@ -29,6 +30,7 @@ import qualified Data.Text.Read as TR
 import qualified Data.Vector as V
 
 import JSON
+import Format
 
 type Terms = [J.Value]
 
@@ -66,30 +68,39 @@ instance J.FromJSON Count where
 
 -- |top-level parameters for the overall search
 data Param = Param
-  { paramCount :: Count
+  { paramIndex :: Maybe String
+  , paramCount :: Count
   , paramSort :: Terms
+  , paramFormat :: Maybe Format
+  , paramDebug :: Bool
   }
 
 instance Semigroup Param where
-  Param c1 s1 <> Param c2 s2 = Param
+  Param i1 c1 s1 f1 d1 <> Param i2 c2 s2 f2 d2 = Param
+    (i1 <|> i2)
     (c1 <> c2)
     (s1 <> s2)
+    (f1 <|> f2)
+    (d1 || d2)
 
 instance Monoid Param where
-  mempty = Param mempty mempty
+  mempty = Param Nothing mempty mempty Nothing False
 
 instance Default Param where
   def = mempty{ paramSort = [J.String "_doc"] }
 
 instance FromObject Param where
   parseObject = do
+    paramIndex   <- parseFieldMaybe "index"
     paramCount   <- parseFieldMaybe "count" .!= mempty
     paramSort    <- parseTermsField "sort"
+    paramFormat  <- parseFieldMaybe "format"
+    paramDebug   <- parseFieldMaybe "debug" .!= False
     return Param{..}
 
 paramKeys :: JM.KeyMap ()
 paramKeys = JM.fromList $ map (, ())
-  [ "count", "sort" ]
+  [ "index", "count", "sort", "format", "debug" ]
 
 instance J.FromJSON Param where
   parseJSON = parseJSONObject "query params"

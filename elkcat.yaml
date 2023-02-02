@@ -21,17 +21,32 @@ elasticsearch:
   headers:
     #accept-encoding: ' ' # disable gzip, etc
 
-# index or index pattern to query
-index: syslog-*
-
 # number of results in each request, using the "search_after" paging mechanism.
 size: 10000
+
+# maximum number of results to return (queried in pages of size).
+count: null
+
+# index or index pattern to query
+index: syslog-*
 
 # message format containing {FIELD} placeholders with optional format:
 #   {FIELD:ESFORMAT}: elastic search "format" option
 #   {FIELD:DATEFMT}: date format in local timezone (e.g. "%Y-%m-%d %H:%M:%S")
 #   {FIELD:[+-]WIDTH}: left (positive) or right (negative) padding
 format: '{syslog_timestamp:%F %T%Q} {syslog_hostname} {syslog_program}[{syslog_pid}]: {syslog_message}'
+
+# fields to sort by, passed as the ES sort query argument as-is.
+#   _doc is always added as the final sort term to make search_after valid (XXX)
+sort:
+  - "@timestamp"
+
+# filter, must_not: default search terms, as included in a bool query
+#filter: []
+#must_not: []
+
+# print raw json requests and responses
+#debug: true
 
 # macros that can be used to define options and arguments.
 # Macros are called by name and passed an object, the keys of which are
@@ -102,22 +117,12 @@ macros:
         '{field}':
           '{op}': '{}'
 
-# default query specification. Query specifications can consist of:
-#   count: maximum number of results to return (queried in pages of size, above).
-#     null or missing means unlimited
-#   sort: fields to sort by, passed as the ES sort query argument as-is.
-#     _doc is always added as the final sort term to make search_after valid (XXX)
-#   filter: search terms, generally included in a query bool filter
-#   must_not: negated search terms, generally included in a query bool must_not
-default:
-  sort:
-    - "@timestamp"
-
-# option specifications, which can modify the default query.
+# option specifications, which can modify the query settings above.
 # All options can specify:
 #   flags: list of long or short flag names (without preceding "-")
 #   help: help text to include in option description
-#   count, sort, filter, and must_not query terms (as in default, above)
+#   index, count, format, debug: override the default settings
+#   sort, filter, must_not: additional terms added to the default
 # Alternatively, rather than query terms, options can specify:
 #   op: '(', ')', '|', '!' representing special joining operations
 #
@@ -201,6 +206,13 @@ opts:
 - flags: [P,program]
   keyword:
     field: syslog_program
+- flags: [d,debug]
+  debug: true
+  help: Print raw JSON requests and responses.
+- flags: [format]
+  format: {}
+  arg: FMT
+  help: Output messages using FMT (see config).
 
 # how to handle arguments without flags.
 # This is a single argument handler just as with options above, allowing all
@@ -243,6 +255,3 @@ help: |
   QUERY arguments can be a full-text search phrase, a simple elastic query
   (starting with "+-"), or a regular expression (as "/REGEX/[i]").  When
   possible avoid regular expressions as they can be slow.
-
-# print raw json requests and responses
-#debug: True

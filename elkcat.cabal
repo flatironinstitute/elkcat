@@ -27,6 +27,7 @@ executable elkcat
     Paths_elkcat
     Args
     Config
+    Format
     JSON
     Placeholder
     Query

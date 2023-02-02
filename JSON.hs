@@ -97,6 +97,10 @@ pmval .!= val = fromMaybe val <$> pmval
 parseSubObject :: J.Key -> ObjectParser a -> ObjectParser a
 parseSubObject k p = explicitParseField (withObjectParser (JK.toString k) p) k
 
+-- |Use 'withObjectParser' as an 'explicitParseFieldMaybe'.
+parseSubObjectMaybe :: J.Key -> ObjectParser a -> ObjectParser (Maybe a)
+parseSubObjectMaybe k p = explicitParseFieldMaybe (withObjectParser (JK.toString k) p) k
+
 -- |@partitionObject a b@ splits object b into (keys in a, keys not in a)
 partitionObject :: JM.KeyMap a -> JM.KeyMap b -> (JM.KeyMap b, JM.KeyMap b)
 partitionObject p o = (JM.intersection o p, JM.difference o p)
