@@ -96,7 +96,7 @@ instance FromObject ArgCase where
       (J.withText "regex" $ \m -> (,) m <$> RE.makeRegexOptsM compExtended RE.blankExecOpt (T.unpack m))
       "match"
     argSplit <- parseFieldMaybe "split"
-    argType  <- parseFieldMaybe "type"   .!= TypeString
+    argType  <- parseFieldMaybe "type" .!= TypeString
     argQuery <- parseRawQueryToken
     return ArgCase{..}
 

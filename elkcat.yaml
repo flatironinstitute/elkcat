@@ -55,7 +55,7 @@ macros:
   keyword:
     arg: TERM
     help: >
-      Select {field} matching TERM.
+      Select {field} matching TERM
     switch:
     - match: '/(.*)/'
       filter:
@@ -84,7 +84,7 @@ macros:
   text:
     arg: QUERY
     help: >
-      Select {field} matching QUERY.
+      Select {field} matching QUERY
     switch:
     - match: '/(.*)/'
       filter:
@@ -111,7 +111,7 @@ macros:
     type: date
     arg: TIMESTAMP
     help: >
-      Select messages with {field} {op} TIMESTAMP.
+      Select messages with {field} {op} TIMESTAMP
     filter:
       range:
         '{field}':
@@ -158,14 +158,14 @@ opts:
 - flags: ['n',count]
   count: {}
   arg: COUNT
-  help: Select at most COUNT messages.
+  help: Select at most COUNT messages
 - flags: ['c',count]
   count: true
-  help: Print only a count of messages.
+  help: Print only a count of messages
 - flags: [r,reverse]
   sort:
     - "@timestamp": desc
-  help: Reverse sort order (newest to oldest).
+  help: Reverse sort order (newest to oldest)
 - flags: [a,after]
   timerange:
     field: '@timestamp'
@@ -184,7 +184,7 @@ opts:
   arg: IP
   help: |
     Select messages by IP address,
-    which may be a subnet specification.
+    which may be a subnet specification
 - flags: [S,severity]
   filter:
     terms:
@@ -193,7 +193,7 @@ opts:
   arg: VALUE
   help: |
     Select messages with severity VALUE,
-    which may be a comma-separated list.
+    which may be a comma-separated list
 - flags: [F,facility]
   filter:
     terms:
@@ -202,17 +202,17 @@ opts:
   arg: VALUE
   help: |
     Select messages with facility VALUE,
-    which may be a comma-separated list.
+    which may be a comma-separated list
 - flags: [P,program]
   keyword:
     field: syslog_program
 - flags: [d,debug]
   debug: true
-  help: Print raw JSON requests and responses.
+  help: Print raw JSON requests and responses
 - flags: [format]
   format: {}
   arg: FMT
-  help: Output messages using FMT (see config).
+  help: Output messages using FMT (see config)
 
 # how to handle arguments without flags.
 # This is a single argument handler just as with options above, allowing all
@@ -230,13 +230,13 @@ args:
   text:
     field: message
   help: |
-    Select messages matching QUERY.
-      '('           Begin a grouped set of arguments.
-      ')'           End a grouped set of arguments.
-      '!'           Exclude messages matching the immediately next argument
-                    (NOT: high precedence).
+    Select messages matching QUERY
+      '('           Begin a grouped set of arguments
+      ')'           End a grouped set of arguments
+      '!'           Exclude messages matching the immediately following argument
+                    (NOT; high precedence)
       '|'           Select messages matching either left or right arguments
-                    (OR: low precedence).
+                    (OR; low precedence)
 
 # help text to include at the top of the output
 help: |

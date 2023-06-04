@@ -82,50 +82,51 @@ main = do
   index <- maybe (fail "index must be set in config") return paramIndex
   format <- maybe (fail "format must be set in config") return paramFormat
 
-  let es api args = do
-        let body = JE.encodingToLazyByteString $ JE.pairs args
-        when paramDebug $ BSLC.hPutStrLn stderr body
-        res <- HTTP.httpJSON $ confRequest
-          { HTTP.path = HTTP.path confRequest <> BS.intercalate "/" (map (BSC.pack . URI.escapeURIString URI.isUnescapedInURIComponent)
-            [index, api])
-          , HTTP.requestBody = HTTP.RequestBodyLBS body
-          }
-        mapM_ (BSC.hPutStrLn stderr) $ HTTP.getResponseHeader "warning" res
-        let s = HTTP.responseStatus res
-            ok = statusIsSuccessful s
-            j = HTTP.responseBody res
-            p = J.fromJSON j
-        case p of
-          J.Success r | statusIsSuccessful s -> do
-            when paramDebug $ BSLC.hPutStrLn stderr $ J.encode j
-            return r
-          _ -> do
-            if ok
-              then hPutStrLn stderr $ "Parse error: " <> show p
-              else BSC.hPutStrLn stderr  $ "Error: " <> BSC.pack (show (statusCode s)) <> " " <> statusMessage s
-            BSLC.hPutStrLn stderr $ "Request: " <> body
-            BSLC.hPutStrLn stderr $ "Response: " <> J.encode j
-            exitFailure
+  let
+    es api args = do
+      let body = JE.encodingToLazyByteString $ JE.pairs args
+      when paramDebug $ BSLC.hPutStrLn stderr body
+      res <- HTTP.httpJSON $ confRequest
+        { HTTP.path = HTTP.path confRequest <> BS.intercalate "/" (map (BSC.pack . URI.escapeURIString URI.isUnescapedInURIComponent)
+          [index, api])
+        , HTTP.requestBody = HTTP.RequestBodyLBS body
+        }
+      mapM_ (BSC.hPutStrLn stderr) $ HTTP.getResponseHeader "warning" res
+      let s = HTTP.responseStatus res
+          ok = statusIsSuccessful s
+          j = HTTP.responseBody res
+          p = J.fromJSON j
+      case p of
+        J.Success r | statusIsSuccessful s -> do
+          when paramDebug $ BSLC.hPutStrLn stderr $ J.encode j
+          return r
+        _ -> do
+          if ok
+            then hPutStrLn stderr $ "Parse error: " <> show p
+            else BSC.hPutStrLn stderr  $ "Error: " <> BSC.pack (show (statusCode s)) <> " " <> statusMessage s
+          BSLC.hPutStrLn stderr $ "Request: " <> body
+          BSLC.hPutStrLn stderr $ "Response: " <> J.encode j
+          exitFailure
 
-      fmt = formatMessage format
+    fmt = formatMessage format
 
-      stream (Just 0) _ = return ()
-      stream count sa = do
-        QueryResponse{..} <- es "_search" $
-             "track_total_hits" J..= False
-          <> "sort" J..= nubBy ((==) `on` querySortKey) paramSort
-          <> "_source" J..= False
-          <> "fields" `JE.pair` JE.list id (formatFields format)
-          <> "query" J..= q
-          <> "size" J..= size
-          -- <> "collapse" `JE.pair` (JE.pairs $ "field" J..= J.String "hostname" <> "inner_hits" `JE.pair` (J.pairs $ "name" J..= J.String "hostname" <> "size" J..= J.Number 0))
-          <> foldMap ("search_after" J..=) sa
-        let n = fromIntegral $ V.length responseHits
-        V.mapM_ (TIO.putStrLn . fmt) responseHits
-        unless (n < size) $
-          stream (subtract n <$> count) $ Just $ docSort $ V.last responseHits
-        where
-        size = maybe id min count confSize
+    stream (Just 0) _ = return ()
+    stream count sa = do
+      QueryResponse{..} <- es "_search" $
+           "track_total_hits" J..= False
+        <> "sort" J..= nubBy ((==) `on` querySortKey) paramSort
+        <> "_source" J..= False
+        <> "fields" `JE.pair` JE.list id (formatFields format)
+        <> "query" J..= q
+        <> "size" J..= size
+        -- <> "collapse" `JE.pair` (JE.pairs $ "field" J..= J.String "hostname" <> "inner_hits" `JE.pair` (J.pairs $ "name" J..= J.String "hostname" <> "size" J..= J.Number 0))
+        <> foldMap ("search_after" J..=) sa
+      let n = fromIntegral $ V.length responseHits
+      V.mapM_ (TIO.putStrLn . fmt) responseHits
+      unless (n < size) $
+        stream (subtract n <$> count) $ Just $ docSort $ V.last responseHits
+      where
+      size = maybe id min count confSize
 
   case paramCount of
     CountOnly -> do
