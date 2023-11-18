@@ -17,6 +17,7 @@ import qualified Data.Text.IO as TIO
 import qualified Data.Vector as V
 import qualified Data.Yaml as Y
 import qualified Network.HTTP.Client.Conduit as HTTP
+import qualified Network.HTTP.Client.TLS as HTTPS
 import qualified Network.HTTP.Simple as HTTP
 import           Network.HTTP.Types (statusCode, statusMessage, statusIsSuccessful)
 import qualified Network.URI as URI
@@ -64,6 +65,7 @@ main = do
     copyFile src conffile
     setPermissions conffile (setOwnerReadable True $ setOwnerWritable True emptyPermissions)
   Config{..} <- Y.decodeFileThrow conffile
+  HTTPS.setGlobalManager =<< confManager
 
   prog <- getProgName
   args' <- getArgs

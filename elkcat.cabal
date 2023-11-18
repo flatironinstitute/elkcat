@@ -41,9 +41,11 @@ executable elkcat
     , array
     , bytestring
     , case-insensitive
+    , connection
     , data-default
     , directory
     , http-client
+    , http-client-tls
     , http-conduit
     , http-types
     , mtl

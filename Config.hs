@@ -13,7 +13,9 @@ import qualified Data.CaseInsensitive as CI
 import           Data.Default (def)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
+import           Network.Connection (settingDisableCertificateValidation)
 import qualified Network.HTTP.Client.Conduit as HTTP
+import qualified Network.HTTP.Client.TLS as HTTPS
 import           Network.HTTP.Types.Header (hContentType)
 
 import JSON
@@ -22,6 +24,7 @@ import Args
 
 data Config = Config
   { confRequest :: HTTP.Request
+  , confManager :: IO HTTP.Manager
   , confSize :: Word
   , confDefault :: ParamQuery
   , confOpts :: [Option]
@@ -44,14 +47,15 @@ applyAuth f a = f (TE.encodeUtf8 $ authUsername a) (TE.encodeUtf8 $ authPassword
 
 instance J.FromJSON Config where
   parseJSON = withObjectParser "elkcat config" $ do
-    confRequest <- parseSubObject "elasticsearch" $ do
+    (confRequest, confManager) <- parseSubObject "elasticsearch" $ do
       req <- explicitParseField (J.withText "url" $ 
         either (fail . show) return . HTTP.parseRequest . T.unpack) "url"
       basic <- parseFieldMaybe "basic-auth"
       proxy <- parseFieldMaybe "proxy-auth"
       bearer <- parseFieldMaybe "bearer-auth"
       headers <- parseFieldMaybe "headers" .!= []
-      return $
+      insecure <- parseFieldMaybe "insecure" .!= False
+      return (
           maybe id (HTTP.applyBearerAuth . TE.encodeUtf8) bearer
         $ maybe id (applyAuth HTTP.applyBasicProxyAuth) proxy
         $ maybe id (applyAuth HTTP.applyBasicAuth) basic
@@ -61,6 +65,10 @@ instance J.FromJSON Config where
               ] ++ map (CI.mk . TE.encodeUtf8 *** TE.encodeUtf8) headers
           , HTTP.responseTimeout = HTTP.responseTimeoutNone
           }
+        , HTTPS.newTlsManagerWith $ HTTPS.mkManagerSettings def
+          { settingDisableCertificateValidation = insecure
+          } Nothing
+        )
     confSize <- parseFieldMaybe' "size" .!= 1000
     macros <- parseFieldMaybe "macros" .!= JM.empty
     d0 <- parseObject
