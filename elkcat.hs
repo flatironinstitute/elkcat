@@ -22,9 +22,10 @@ import qualified Network.HTTP.Simple as HTTP
 import           Network.HTTP.Types (statusCode, statusMessage, statusIsSuccessful)
 import qualified Network.URI as URI
 import qualified System.Console.GetOpt as Opt
-import           System.Directory (getXdgDirectory, XdgDirectory(XdgConfig), doesFileExist, copyFile, setPermissions, setOwnerReadable, setOwnerWritable, emptyPermissions)
+import           System.Directory (getXdgDirectory, XdgDirectory(XdgConfig), doesDirectoryExist, doesFileExist, copyFile, setPermissions, setOwnerReadable, setOwnerWritable, emptyPermissions)
 import           System.Environment (getProgName, getArgs, lookupEnv)
 import           System.Exit (exitFailure)
+import           System.FilePath ((</>), (<.>), takeBaseName)
 import           System.IO (hPutStrLn, stderr)
 
 import Paths_elkcat (getDataFileName)
@@ -57,7 +58,14 @@ querySortKey _ = T.empty
 
 main :: IO ()
 main = do
-  conffile <- maybe (getXdgDirectory XdgConfig "elkcat.yaml") return =<< lookupEnv "ELKCAT"
+  prog <- getProgName
+
+  confpath <- maybe (getXdgDirectory XdgConfig "") return =<< lookupEnv "ELKCAT"
+  isdir <- doesDirectoryExist confpath
+  let conffile
+        | isdir = confpath </> (if null base then "elkcat" else base) <.> "yaml"
+        | otherwise = confpath
+        where base = takeBaseName prog
   isconf <- doesFileExist conffile
   unless isconf $ do
     hPutStrLn stderr $ "Copying default config file to " ++ conffile
@@ -67,7 +75,6 @@ main = do
   Config{..} <- Y.decodeFileThrow conffile
   HTTPS.setGlobalManager =<< confManager
 
-  prog <- getProgName
   args' <- getArgs
 
   let (opts, ~[], errs) = Opt.getOpt (Opt.ReturnInOrder confArgs) confOpts args'

@@ -44,6 +44,7 @@ executable elkcat
     , connection
     , data-default
     , directory
+    , filepath
     , http-client
     , http-client-tls
     , http-conduit
